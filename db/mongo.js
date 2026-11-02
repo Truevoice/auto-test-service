@@ -67,7 +67,8 @@ const connect = async () => {
     mongoose.connection.on('disconnected', () => log.warn('MongoDB disconnected'))
 
     const options = { serverSelectionTimeoutMS: 10000 }
-    if (MONGO_USER) {
+    // MONGO_URI มี user/pass ของตัวเองอยู่แล้ว ใส่ MONGO_USER ทับจะ login ผิด user (Authentication failed)
+    if (MONGO_USER && !MONGO_URI) {
         options.user = MONGO_USER
         options.pass = MONGO_PASSWORD
     }
