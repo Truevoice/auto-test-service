@@ -1,7 +1,6 @@
-// ดึง sessions ของวันเดียว (ตาม _id) ออกมาเป็นไฟล์ Extended JSON ไม่เอา session_logs
+// ดึง sessions ของวันเดียว (ตาม _id) ออกมาเป็นไฟล์ JSON ไม่เอา session_logs
 // ใช้: node scripts/export_sessions.js [YYYY-MM-DD] [ไฟล์ปลายทาง]
 // ไม่ใส่วันที่ = วันนี้ (ตามเวลาเครื่อง), ไม่ใส่ไฟล์ = exports/sessions_<วันที่>.json
-// ดึงจาก server ขณะที่ .env ชี้ DB บนเครื่อง: MONGO_URI= SSH_ENABLED=true node scripts/export_sessions.js
 const fs = require('fs')
 const path = require('path')
 require('dotenv').config({ path: path.join(__dirname, '../.env') })
@@ -44,17 +43,14 @@ const main = async () => {
         .project({ session_logs: 0 })
         .sort({ _id: -1 })
 
-    // เขียนทีละ document ไม่โหลดทั้งวันเข้าหน่วยความจำ
-    // ใช้ EJSON ไม่ใช่ JSON.stringify: ObjectId/Date ออกมาเป็น {"$oid"} / {"$date"} import กลับแล้วได้ชนิดเดิม
-    // (JSON ธรรมดากลายเป็น string แล้ว query ตามวันที่หรือ $lookup ด้วย _id จะหาไม่เจอ)
-    const { EJSON } = mongoose.mongo.BSON
+    // เขียนทีละ document ไม่โหลดทั้งวันเข้าหน่วยความจำ (ObjectId เป็น string, Date เป็น ISO string)
     fs.mkdirSync(path.dirname(out), { recursive: true })
     const file = fs.createWriteStream(out)
     let count = 0
     file.write('[\n')
     for await (const doc of cursor) {
         if (count > 0) file.write(',\n')
-        file.write(EJSON.stringify(doc, null, 2, { relaxed: true }))
+        file.write(JSON.stringify(doc, null, 2))
         count++
     }
     file.write('\n]\n')
