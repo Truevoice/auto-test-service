@@ -27,9 +27,13 @@ const qcSessionSchema = new mongoose.Schema(
             diff_pct: Number,
         },
         model: String,
+        // hash ของ prompt + schema ที่ใช้ตรวจ (เปลี่ยน prompt แล้วแยกผลเก่ากับใหม่ได้)
+        prompt_version: String,
         error: String,
         attempts: Number,
         call_created_at: Date,
+        // รอบตรวจล่าสุดที่ตรวจสายนี้ (qc_job_run)
+        job_run_id: mongoose.Schema.Types.ObjectId,
         job_run_at: Date,
     },
     { collection: 'qc_session', timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } },

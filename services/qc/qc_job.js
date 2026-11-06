@@ -2,22 +2,21 @@ const cron = require('node-cron')
 const log = require('../../utils/log')
 const gemini = require('../../api/gemini_api')
 const QcSession = require('../../models/qc_session_model')
+const QcJobRun = require('../../models/qc_job_run_model')
 const { sampleEndedSessions } = require('./session_repo')
+const { getSettings, onChange } = require('./qc_settings')
+const { getPromptBundle } = require('./qc_files')
 const { buildTranscriptWithTurns, toGsUri } = require('./transcript')
 const { checkAudio } = require('./audio_check')
 const { findTurnMismatch } = require('./turn_check')
 const { isRetryable, backoffDelayMs } = require('./retry_policy')
-const {
-    QC_JOB_ENABLED = 'false',
-    QC_JOB_CRON = '0 * * * *',
-    QC_CONCURRENCY = '3',
-    QC_MAX_RETRY = '2',
-} = process.env
 
+// กันรอบตรวจซ้อนกันใน process นี้ (เช็กเร็วก่อนถาม DB)
 let running = false
+let scheduledTask = null
 
 const evaluateWithRetry = async (input) => {
-    const maxAttempts = Number(QC_MAX_RETRY) + 1
+    const maxAttempts = getSettings().maxRetry + 1
     let lastError
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         let output
@@ -48,13 +47,16 @@ const evaluateWithRetry = async (input) => {
     throw lastError
 }
 
-const evaluateSession = async (session, jobRunAt) => {
+// run: { _id, started_at, model, temperature, prompt, schema, prompt_version } ของรอบที่ตรวจสายนี้
+const evaluateSession = async (session, run) => {
     const base = {
         session_id: session._id,
         call_recording_url: session.call_recording_url,
         call_created_at: session.created_at,
-        model: gemini.model,
-        job_run_at: jobRunAt,
+        model: run.model,
+        prompt_version: run.prompt_version,
+        job_run_id: run._id,
+        job_run_at: run.started_at,
     }
     let update
     try {
@@ -64,6 +66,10 @@ const evaluateSession = async (session, jobRunAt) => {
             transcript,
             customerTurns,
             audioUri: toGsUri(session.call_recording_url),
+            prompt: run.prompt,
+            schema: run.schema,
+            model: run.model,
+            temperature: run.temperature,
         })
         const audioCheck = checkAudio({ audioTokens: usage.audio_tokens, callDurationSeconds: session.duration })
         if (audioCheck.status !== 'OK') {
@@ -85,60 +91,174 @@ const evaluateSession = async (session, jobRunAt) => {
     return update.status
 }
 
-// รัน worker พร้อมกันตาม QC_CONCURRENCY
-const runPool = async (items, worker) => {
-    const results = []
+// รัน worker พร้อมกันตามจำนวนช่องตรวจ (concurrency)
+const runPool = async (items, worker, concurrency) => {
     let index = 0
     const next = async () => {
         while (index < items.length) {
             const item = items[index++]
-            results.push(await worker(item))
+            await worker(item)
         }
     }
-    await Promise.all(Array.from({ length: Math.max(1, Number(QC_CONCURRENCY)) }, next))
-    return results
+    await Promise.all(Array.from({ length: Math.max(1, concurrency) }, next))
 }
 
-const runQcJob = async (options = {}) => {
-    if (running) {
-        log.warn('QC: previous run still in progress, skip')
-        return { skippedRun: true }
-    }
-    running = true
-    const jobRunAt = new Date()
+// อัปเดตสถานะของสายเดียวใน run.calls ด้วย arrayFilters (หลายช่องตรวจเขียนพร้อมกันได้ ไม่ทับกัน)
+const setCall = (runId, botSessionId, fields, inc) =>
+    QcJobRun.updateOne(
+        { _id: runId },
+        {
+            $set: Object.fromEntries(Object.entries(fields).map(([k, v]) => [`calls.$[c].${k}`, v])),
+            ...(inc ? { $inc: inc } : {}),
+        },
+        { arrayFilters: [{ 'c.bot_session_id': botSessionId }] },
+    )
+
+// เลือกสาย แล้วตรวจทีละช่อง บันทึกความคืบหน้าลง qc_job_run ตลอดทาง
+const executeRun = async (run) => {
+    const { lookbackHours, samplePercent, minDurationSeconds } = run.options
     try {
-        const { total, docs } = await sampleEndedSessions({ ...options, now: jobRunAt })
+        const now = run.started_at
+        const { total, docs } = await sampleEndedSessions({ lookbackHours, samplePercent, minDurationSeconds, now })
         const ids = docs.map((doc) => doc.bot_session_id)
         const done = await QcSession.find({ bot_session_id: { $in: ids }, status: 'DONE' }).distinct('bot_session_id')
         const doneSet = new Set(done)
         const todo = docs.filter((doc) => doc.bot_session_id && !doneSet.has(doc.bot_session_id))
+        const todoSet = new Set(todo)
 
-        const statuses = await runPool(todo, (session) => evaluateSession(session, jobRunAt))
-        const summary = {
-            total,
-            sampled: docs.length,
-            skipped: docs.length - todo.length,
-            done: statuses.filter((s) => s === 'DONE').length,
-            failed: statuses.filter((s) => s === 'FAILED').length,
-            durationMs: Date.now() - jobRunAt.getTime(),
-        }
-        log.info(summary, 'QC: job finished')
-        return summary
+        await QcJobRun.updateOne(
+            { _id: run._id },
+            {
+                $set: {
+                    status: 'RUNNING',
+                    calls_from: new Date(now.getTime() - lookbackHours * 60 * 60 * 1000),
+                    calls_to: now,
+                    total,
+                    sampled: docs.length,
+                    skipped: docs.length - todo.length,
+                    calls: docs.map((doc) => ({
+                        session_id: doc._id,
+                        bot_session_id: doc.bot_session_id,
+                        call_created_at: doc.created_at,
+                        duration: doc.duration,
+                        status: todoSet.has(doc) ? 'QUEUED' : 'SKIPPED',
+                    })),
+                },
+            },
+        )
+
+        await runPool(
+            todo,
+            async (session) => {
+                await setCall(run._id, session.bot_session_id, { status: 'RUNNING', started_at: new Date() })
+                const status = await evaluateSession(session, run)
+                await setCall(
+                    run._id,
+                    session.bot_session_id,
+                    { status, finished_at: new Date() },
+                    { [status === 'DONE' ? 'done' : 'failed']: 1 },
+                )
+            },
+            run.concurrency,
+        )
+
+        const finished = await QcJobRun.findOneAndUpdate(
+            { _id: run._id },
+            { $set: { status: 'DONE', finished_at: new Date() } },
+            { new: true, projection: { calls: 0 }, lean: true },
+        )
+        log.info(
+            {
+                job_run_id: run._id,
+                total: finished.total,
+                sampled: finished.sampled,
+                skipped: finished.skipped,
+                done: finished.done,
+                failed: finished.failed,
+                durationMs: finished.finished_at - finished.started_at,
+            },
+            'QC: job finished',
+        )
     } catch (e) {
         log.error(e, 'QC: job failed')
-        throw e
+        await QcJobRun.updateOne(
+            { _id: run._id },
+            { $set: { status: 'FAILED', error: e.message, finished_at: new Date() } },
+        ).catch((err) => log.error(err, 'QC: mark run failed'))
     } finally {
         running = false
     }
 }
 
-const start = () => {
-    if (QC_JOB_ENABLED !== 'true') {
-        log.info('QC: job disabled (QC_JOB_ENABLED != true)')
-        return
+const ACTIVE = ['SAMPLING', 'RUNNING']
+
+// เริ่มรอบตรวจแล้วคืนทันที (งานจริงทำต่อเบื้องหลัง) หน้าเว็บใช้ job_run id ไปถามความคืบหน้า
+// options ที่ไม่ส่งมาใช้ค่าตั้งปัจจุบัน
+const startQcJob = async (options = {}, trigger = 'RUN_TASK') => {
+    if (running) {
+        const current = await QcJobRun.findOne({ status: { $in: ACTIVE } }, { calls: 0 }).sort({ started_at: -1 }).lean()
+        return { started: false, run: current }
     }
-    cron.schedule(QC_JOB_CRON, () => runQcJob().catch(() => {}), { timezone: 'Asia/Bangkok' })
-    log.info(`QC: job scheduled "${QC_JOB_CRON}"`)
+    running = true
+    try {
+        const settings = getSettings()
+        // ใช้ prompt/schema ชุดเดียวทั้งรอบ แม้มีคนแก้จากหน้าเว็บระหว่างตรวจ
+        const { prompt, schema, version } = getPromptBundle()
+        const run = await QcJobRun.create({
+            trigger,
+            status: 'SAMPLING',
+            options: {
+                lookbackHours: options.lookbackHours ?? settings.lookbackHours,
+                samplePercent: options.samplePercent ?? settings.samplePercent,
+                minDurationSeconds: options.minDurationSeconds ?? settings.minDurationSeconds,
+            },
+            model: settings.model,
+            prompt_version: version,
+            concurrency: settings.concurrency,
+            started_at: new Date(),
+        })
+        const job = { ...run.toObject(), temperature: settings.temperature, prompt, schema }
+        executeRun(job) // ไม่ await: งานอาจยาวเกินเวลาที่ proxy/Cloudflare รอได้
+        return { started: true, run: run.toObject() }
+    } catch (e) {
+        running = false
+        throw e
+    }
 }
 
-module.exports = { start, runQcJob, evaluateSession, evaluateWithRetry }
+// รอบที่ค้างสถานะกำลังทำงานจากการรันครั้งก่อน (server รีสตาร์ทกลางรอบ) ไม่มีใครทำต่อแล้ว
+const failStaleRuns = () =>
+    QcJobRun.updateMany(
+        { status: { $in: ACTIVE } },
+        { $set: { status: 'FAILED', error: 'server restarted', finished_at: new Date() } },
+    )
+
+// ตั้ง/ตั้งใหม่ cron ตามค่าตั้งปัจจุบัน (เรียกตอนเริ่มและทุกครั้งที่แก้ค่าจากหน้าเว็บ)
+const applySchedule = (settings = getSettings()) => {
+    if (scheduledTask) {
+        scheduledTask.destroy()
+        scheduledTask = null
+    }
+    if (!settings.jobEnabled) {
+        log.info('QC: job disabled')
+        return
+    }
+    scheduledTask = cron.schedule(
+        settings.schedule,
+        () =>
+            startQcJob({}, 'SCHEDULE')
+                .then(({ started }) => started || log.warn('QC: previous run still in progress, skip'))
+                .catch((e) => log.error(e, 'QC: scheduled run failed to start')),
+        { timezone: 'Asia/Bangkok' },
+    )
+    log.info(`QC: job scheduled "${settings.schedule}"`)
+}
+
+const start = async () => {
+    const { modifiedCount } = await failStaleRuns()
+    if (modifiedCount) log.warn({ count: modifiedCount }, 'QC: marked unfinished runs as failed')
+    applySchedule()
+    onChange(applySchedule)
+}
+
+module.exports = { start, startQcJob, evaluateSession, evaluateWithRetry }

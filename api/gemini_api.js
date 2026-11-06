@@ -9,15 +9,11 @@ const {
     GEMINI_MODEL = 'gemini-2.5-flash',
     GEMINI_TEMPERATURE = '0',
     GEMINI_TIMEOUT_MS = '120000',
-    QC_PROMPT_FILE = 'prompts/qc_judge.txt',
-    QC_SCHEMA_FILE = 'prompts/qc_result.schema.json',
 } = process.env
 
 const ROOT = path.join(__dirname, '..')
 const keyFile = path.join(ROOT, 'key', SERVICE_ACCOUNT_FILE)
 let client = null
-let prompt = null
-let schema = null
 
 const getClient = () => {
     if (!client) {
@@ -35,12 +31,6 @@ const getClient = () => {
     return client
 }
 
-const loadPrompt = () => {
-    if (!prompt) prompt = fs.readFileSync(path.resolve(ROOT, QC_PROMPT_FILE), 'utf8')
-    if (!schema) schema = JSON.parse(fs.readFileSync(path.resolve(ROOT, QC_SCHEMA_FILE), 'utf8'))
-    return { prompt, schema }
-}
-
 const nowText = () =>
     new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Bangkok', hour12: false }) + ' (Asia/Bangkok)'
 
@@ -52,12 +42,22 @@ const customerTurnsText = (customerTurns = []) =>
     ].join('\n')
 
 // ส่ง transcript + ไฟล์เสียงใน GCS ให้ Gemini ประเมิน แล้วคืน JSON ตาม schema
-const evaluate = async ({ transcript, customerTurns, audioUri, mimeType = 'audio/wav' }) => {
-    const { prompt, schema } = loadPrompt()
+// prompt/schema/model/temperature มาจากค่าตั้งใน DB ที่แก้จากหน้าเว็บได้ (model/temperature ไม่ส่งมาใช้ค่าจาก env)
+const evaluate = async ({
+    transcript,
+    customerTurns,
+    audioUri,
+    prompt,
+    schema,
+    mimeType = 'audio/wav',
+    model = GEMINI_MODEL,
+    temperature = Number(GEMINI_TEMPERATURE),
+}) => {
+    if (!prompt || !schema) throw new Error('gemini_api: prompt and schema are required')
     const text = [`Current datetime: ${nowText()}`, `Text transcript:\n${transcript}`]
     if (customerTurns) text.push(customerTurnsText(customerTurns))
     const response = await getClient().models.generateContent({
-        model: GEMINI_MODEL,
+        model,
         contents: [
             {
                 role: 'user',
@@ -71,7 +71,7 @@ const evaluate = async ({ transcript, customerTurns, audioUri, mimeType = 'audio
             systemInstruction: prompt,
             responseMimeType: 'application/json',
             responseJsonSchema: schema,
-            temperature: Number(GEMINI_TEMPERATURE),
+            temperature,
         },
     })
     if (!response.text) {

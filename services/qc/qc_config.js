@@ -1,78 +1,46 @@
-const fs = require('fs')
-const path = require('path')
+const { FIELD_IDS, getSettings } = require('./qc_settings')
+const { FILE_IDS, getFile } = require('./qc_files')
 
-const ROOT = path.join(__dirname, '../..')
-
-// ค่าตั้งของงานตรวจอัตโนมัติที่แสดงในหน้า "ตั้งค่าระบบ" ของ UI (อ่านอย่างเดียว)
-// default ต้องตรงกับที่โค้ดแต่ละส่วนใช้จริง
+// ค่าตั้งของงานตรวจอัตโนมัติที่แสดงในหน้า "ตั้งค่าระบบ" ของ UI
+// ค่าตั้งและไฟล์ prompt/schema เก็บใน DB แก้จากหน้าเว็บได้ (editable) ส่วน region อ่านจาก env อย่างเดียว
 // ห้ามใส่ค่าที่เกี่ยวกับสิทธิ์/บัญชี (token, รหัส DB, service account, GCP project) และไม่บอกที่มาของค่า
-// ส่งออกด้วย id กลาง ไม่ส่งชื่อตัวแปร env: [ชื่อ env, id ที่ส่งให้ UI, default]
+// ส่งออกด้วย id กลาง ไม่ส่งชื่อตัวแปร env
 const GROUPS = [
     {
         id: 'job',
         items: [
-            ['QC_JOB_ENABLED', 'jobEnabled', 'false'],
-            ['QC_JOB_CRON', 'schedule', '0 * * * *'],
-            ['QC_LOOKBACK_HOURS', 'lookbackHours', '1'],
-            ['QC_SAMPLE_PERCENT', 'samplePercent', '10'],
-            ['QC_MIN_DURATION_SECONDS', 'minDurationSeconds', '0'],
-            ['QC_CONCURRENCY', 'concurrency', '3'],
-            ['QC_MAX_RETRY', 'maxRetry', '2'],
-            ['QC_PROMPT_FILE', 'promptFile', 'prompts/qc_judge.txt'],
-            ['QC_SCHEMA_FILE', 'schemaFile', 'prompts/qc_result.schema.json'],
+            'jobEnabled',
+            'schedule',
+            'lookbackHours',
+            'samplePercent',
+            'minDurationSeconds',
+            'concurrency',
+            'maxRetry',
+            'promptFile',
+            'schemaFile',
         ],
     },
-    {
-        id: 'gemini',
-        items: [
-            ['GCP_LOCATION', 'region', 'global'],
-            ['GEMINI_MODEL', 'model', 'gemini-2.5-flash'],
-            ['GEMINI_TEMPERATURE', 'temperature', '0'],
-        ],
-    },
+    { id: 'gemini', items: ['region', 'model', 'temperature'] },
 ]
 
-const read = (key, fallback) => {
-    const value = String(process.env[key] ?? '').trim()
-    return value === '' ? fallback : value
-}
+const region = () => String(process.env.GCP_LOCATION ?? '').trim() || 'global'
 
-const fileExists = (relative) => {
-    try {
-        return fs.statSync(path.resolve(ROOT, relative)).isFile()
-    } catch {
-        return false
+const getQcConfig = () => {
+    const settings = getSettings()
+    return {
+        groups: GROUPS.map((group) => ({
+            id: group.id,
+            items: group.items.map((id) => {
+                if (FIELD_IDS.includes(id)) return { id, value: settings[id], editable: true }
+                if (FILE_IDS.includes(id)) {
+                    // ไฟล์: บอกว่ามีเนื้อหาไหมและแก้ล่าสุดเมื่อไร เนื้อหาดูผ่าน GET /qc/config/files/:id
+                    const file = getFile(id)
+                    return { id, value: file?.updated_at ?? null, exists: Boolean(file), editable: true }
+                }
+                return { id, value: region() }
+            }),
+        })),
     }
 }
 
-const FILE_IDS = new Set(['promptFile', 'schemaFile'])
-
-const getQcConfig = () => ({
-    groups: GROUPS.map((group) => ({
-        id: group.id,
-        items: group.items.map(([envKey, id, fallback]) => {
-            const value = read(envKey, fallback)
-            // ไฟล์ prompt/schema: บอกแค่ว่ามีอยู่จริงไหม ไม่ส่งเนื้อหาไฟล์
-            return FILE_IDS.has(id) ? { id, value, exists: fileExists(value) } : { id, value }
-        }),
-    })),
-})
-
-// อ่านเนื้อหาไฟล์ prompt/schema เพื่อแสดงในหน้า UI (อ่านอย่างเดียว เฉพาะ 2 ไฟล์นี้)
-const FILE_ENV = { promptFile: ['QC_PROMPT_FILE', 'prompts/qc_judge.txt'], schemaFile: ['QC_SCHEMA_FILE', 'prompts/qc_result.schema.json'] }
-
-const getQcConfigFile = (id) => {
-    const entry = FILE_ENV[id]
-    if (!entry) return null
-    const relative = read(...entry)
-    const full = path.resolve(ROOT, relative)
-    // กันอ่านไฟล์นอกโปรเจค ถ้า env ชี้ออกไปข้างนอก
-    if (!full.startsWith(ROOT + path.sep)) return null
-    try {
-        return { id, path: relative, content: fs.readFileSync(full, 'utf8') }
-    } catch {
-        return null
-    }
-}
-
-module.exports = { getQcConfig, getQcConfigFile }
+module.exports = { getQcConfig }

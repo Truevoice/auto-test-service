@@ -1,7 +1,10 @@
 const Joi = require('joi')
 const qcJob = require('../services/qc/qc_job')
 const { listQcSessions, getQcSessionDetail } = require('../services/qc/qc_session_service')
-const { getQcConfig, getQcConfigFile } = require('../services/qc/qc_config')
+const { getQcConfig } = require('../services/qc/qc_config')
+const { getFile, updateFile } = require('../services/qc/qc_files')
+const { updateSettings } = require('../services/qc/qc_settings')
+const { toRunView, getLatestRun, getRun } = require('../services/qc/qc_run_service')
 const QcSession = require('../models/qc_session_model')
 const log = require('../utils/log')
 
@@ -16,20 +19,45 @@ const listSchema = Joi.object({
     .allow(''),
 })
 
-// ไม่ส่งค่าไหนมา ใช้ค่าจาก env ของ job
+// ไม่ส่งค่าไหนมา ใช้ค่าตั้งปัจจุบันของงานตรวจ
 const runSchema = Joi.object({
-  lookbackHours: Joi.number().positive(),
+  lookbackHours: Joi.number().min(1).max(720),
   samplePercent: Joi.number().greater(0).max(100),
-  minDurationSeconds: Joi.number().min(0),
+  minDurationSeconds: Joi.number().integer().min(0).max(3600),
 })
 
 class qcController {
+  // เริ่มรอบตรวจแล้วตอบทันที (202) หน้าเว็บถามความคืบหน้าต่อที่ GET /qc/runs/:id
+  // ไม่รอจนตรวจเสร็จ เพราะรอบยาวเกินเวลาที่ Cloudflare/proxy รอได้
   async run(req, res) {
     const { error, value: options } = runSchema.validate(req.body || {})
     if (error) return res.status(400).json({ message: error.details[0].message })
     try {
-      const summary = await qcJob.runQcJob(options)
-      res.json({ message: 'Success', data: summary })
+      const { started, run } = await qcJob.startQcJob(options, 'RUN_TASK')
+      if (!started) return res.status(409).json({ message: 'QC run already in progress', data: toRunView(run) })
+      res.status(202).json({ message: 'Accepted', data: toRunView(run) })
+    } catch (e) {
+      log.error({ error: 'Controller: qcController ' + e?.message })
+      res.status(500).json({ message: 'Internal Server Error' })
+    }
+  }
+
+  // รอบตรวจล่าสุด (กำลังทำหรือจบแล้ว) ใช้ตอนเปิดหน้า "สั่งตรวจทันที"
+  async latestRun(req, res) {
+    try {
+      res.json({ message: 'Success', data: await getLatestRun() })
+    } catch (e) {
+      log.error({ error: 'Controller: qcController ' + e?.message })
+      res.status(500).json({ message: 'Internal Server Error' })
+    }
+  }
+
+  // ความคืบหน้าของรอบเดียว (หน้าเว็บถามทุกไม่กี่วินาทีระหว่างตรวจ)
+  async runDetail(req, res) {
+    try {
+      const run = await getRun(req.params.id)
+      if (!run) return res.status(404).json({ message: 'Data Not Found' })
+      res.json({ message: 'Success', data: run })
     } catch (e) {
       log.error({ error: 'Controller: qcController ' + e?.message })
       res.status(500).json({ message: 'Internal Server Error' })
@@ -60,7 +88,7 @@ class qcController {
     }
   }
 
-  // ค่าตั้งของงานตรวจ (อ่านอย่างเดียว ไม่มีค่าลับหรือข้อมูลบัญชี) สำหรับหน้า "ตั้งค่าระบบ"
+  // ค่าตั้งของงานตรวจ (ไม่มีค่าลับหรือข้อมูลบัญชี) สำหรับหน้า "ตั้งค่าระบบ"
   async config(req, res) {
     try {
       res.json({ message: 'Success', data: getQcConfig() })
@@ -70,13 +98,37 @@ class qcController {
     }
   }
 
+  // แก้ค่าตั้งจากหน้าเว็บ ส่งมาเฉพาะค่าที่เปลี่ยน มีผลกับรอบตรวจถัดไป (cron ตั้งเวลาใหม่ทันที)
+  async updateConfig(req, res) {
+    try {
+      await updateSettings(req.body)
+      res.json({ message: 'Success', data: getQcConfig() })
+    } catch (e) {
+      if (e.status === 400) return res.status(400).json({ message: e.message })
+      log.error({ error: 'Controller: qcController ' + e?.message })
+      res.status(500).json({ message: 'Internal Server Error' })
+    }
+  }
+
   // เนื้อหาไฟล์ prompt หรือ schema (id: promptFile | schemaFile)
   async configFile(req, res) {
     try {
-      const file = getQcConfigFile(req.params.id)
+      const file = getFile(req.params.id)
       if (!file) return res.status(404).json({ message: 'Data Not Found' })
       res.json({ message: 'Success', data: file })
     } catch (e) {
+      log.error({ error: 'Controller: qcController ' + e?.message })
+      res.status(500).json({ message: 'Internal Server Error' })
+    }
+  }
+
+  // แก้เนื้อหาไฟล์ prompt หรือ schema จากหน้าเว็บ { content } มีผลกับรอบตรวจถัดไป
+  async updateConfigFile(req, res) {
+    try {
+      const file = await updateFile(req.params.id, req.body?.content)
+      res.json({ message: 'Success', data: file })
+    } catch (e) {
+      if (e.status === 400) return res.status(400).json({ message: e.message })
       log.error({ error: 'Controller: qcController ' + e?.message })
       res.status(500).json({ message: 'Internal Server Error' })
     }

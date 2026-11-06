@@ -19,11 +19,15 @@ process.on('SIGTERM', shutdown)
     try {
         await mongo.connect()
         await require('./models/qc_session_model').init()
+        await require('./models/qc_job_run_model').init()
+        // ค่าตั้งที่แก้จากหน้าเว็บ ต้องโหลดก่อนตั้ง cron
+        await require('./services/qc/qc_settings').loadSettings()
+        await require('./services/qc/qc_files').loadFiles()
+        await require('./services/qc/qc_job').start()
     } catch (err) {
-        log.error(err, 'Failed to connect MongoDB')
+        log.error(err, 'Failed to start (MongoDB / QC job)')
         process.exit(1)
     }
-    require('./services/qc/qc_job').start()
     app.listen(PORT, () => {
         log.info(`Server is running on port ${PORT}`)
     })
