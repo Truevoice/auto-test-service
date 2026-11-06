@@ -95,4 +95,28 @@ const toUsage = (meta = {}) => {
     }
 }
 
-module.exports = { evaluate, model: GEMINI_MODEL }
+// รายชื่อโมเดลพื้นฐานที่ Google เปิดให้ใช้ใน Vertex AI ตอนนี้ (ชื่อสั้น เช่น gemini-2.5-flash)
+const listModels = async () => {
+    const names = []
+    const pager = await getClient().models.list({ config: { queryBase: true, pageSize: 100 } })
+    for await (const m of pager) names.push(String(m.name || '').split('/').pop())
+    return names.filter(Boolean)
+}
+
+// เรียกโมเดลด้วยข้อความสั้นๆ + JSON schema เล็กๆ เพื่อเช็กว่าใช้กับงานตรวจได้จริงก่อนบันทึก (ใช้ token น้อยมาก)
+const probeModel = async (model) => {
+    const response = await getClient().models.generateContent({
+        model,
+        contents: 'Reply with {"ok": true}.',
+        config: {
+            responseMimeType: 'application/json',
+            responseJsonSchema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] },
+            temperature: 0,
+            // โมเดลที่คิดก่อนตอบ (thinking) ใช้ token ส่วนนี้ด้วย ตั้งน้อยไปจะได้คำตอบว่าง
+            maxOutputTokens: 2048,
+        },
+    })
+    JSON.parse(response.text || '')
+}
+
+module.exports = { evaluate, listModels, probeModel, model: GEMINI_MODEL }

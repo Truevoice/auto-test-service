@@ -3,7 +3,9 @@ const qcJob = require('../services/qc/qc_job')
 const { listQcSessions, getQcSessionDetail } = require('../services/qc/qc_session_service')
 const { getQcConfig } = require('../services/qc/qc_config')
 const { getFile, updateFile } = require('../services/qc/qc_files')
-const { updateSettings } = require('../services/qc/qc_settings')
+const { getSettings, updateSettings, validateSettings } = require('../services/qc/qc_settings')
+const { getModels } = require('../services/qc/qc_models')
+const gemini = require('../api/gemini_api')
 const { toRunView, getLatestRun, getRun } = require('../services/qc/qc_run_service')
 const QcSession = require('../models/qc_session_model')
 const log = require('../utils/log')
@@ -101,10 +103,30 @@ class qcController {
   // แก้ค่าตั้งจากหน้าเว็บ ส่งมาเฉพาะค่าที่เปลี่ยน มีผลกับรอบตรวจถัดไป (cron ตั้งเวลาใหม่ทันที)
   async updateConfig(req, res) {
     try {
-      await updateSettings(req.body)
+      const patch = validateSettings(req.body)
+      // เปลี่ยนโมเดล: ลองเรียกจริงก่อน กันบันทึกโมเดลที่ใช้กับงานตรวจไม่ได้ (รอบตรวจถัดไปจะพังทั้งรอบ)
+      if (patch.model && patch.model !== getSettings().model) {
+        try {
+          await gemini.probeModel(patch.model)
+        } catch (e) {
+          log.warn({ model: patch.model, status: e.status, error: e.message }, 'QC: model probe failed')
+          return res.status(400).json({ message: `model "${patch.model}" cannot be used for QC right now` })
+        }
+      }
+      await updateSettings(patch)
       res.json({ message: 'Success', data: getQcConfig() })
     } catch (e) {
       if (e.status === 400) return res.status(400).json({ message: e.message })
+      log.error({ error: 'Controller: qcController ' + e?.message })
+      res.status(500).json({ message: 'Internal Server Error' })
+    }
+  }
+
+  // รายชื่อโมเดล Gemini ที่ Google เปิดให้ใช้ตอนนี้ (กรองเฉพาะที่ใช้กับงานตรวจได้) สำหรับช่องเลือกโมเดล
+  async models(req, res) {
+    try {
+      res.json({ message: 'Success', data: await getModels() })
+    } catch (e) {
       log.error({ error: 'Controller: qcController ' + e?.message })
       res.status(500).json({ message: 'Internal Server Error' })
     }
