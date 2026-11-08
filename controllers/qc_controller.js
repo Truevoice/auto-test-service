@@ -29,8 +29,9 @@ const runSchema = Joi.object({
 })
 
 const runListSchema = Joi.object({
-  page: Joi.number().integer().min(1).default(1),
-  limit: Joi.number().integer().min(1).max(50).default(20),
+  before: Joi.date().iso(),
+  limit: Joi.number().integer().min(1).max(100).default(30),
+  hideEmpty: Joi.boolean().default(false),
 })
 
 class qcController {

@@ -50,5 +50,7 @@ const qcJobRunSchema = new mongoose.Schema(
 // DB เปิด notablescan ไว้ ทุก query ต้องมี index รองรับ
 qcJobRunSchema.index({ started_at: -1 })
 qcJobRunSchema.index({ status: 1 })
+// หน้า "รอบตรวจ" ซ่อนรอบที่ไม่มีสาย: เดินตาม started_at แล้วกรอง sampled จาก key ใน index (ไม่ต้องอ่านเอกสาร)
+qcJobRunSchema.index({ started_at: -1, sampled: 1 })
 
 module.exports = mongoose.model('QcJobRun', qcJobRunSchema)
