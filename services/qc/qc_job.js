@@ -107,7 +107,10 @@ const runPool = async (items, worker, concurrency) => {
 
 // อัปเดตสถานะของสายเดียว (เอกสารเล็กของสายนั้น ไม่ต้องเขียนเอกสารรอบทั้งก้อน)
 const setCall = (runId, botSessionId, fields) =>
-    QcJobRunCall.updateOne({ job_run_id: runId, bot_session_id: botSessionId }, { $set: fields })
+    QcJobRunCall.updateOne(
+        { job_run_id: runId, bot_session_id: botSessionId },
+        { $set: { ...fields, updated_at: new Date() } },
+    )
 
 // ตัวนับของรอบ $inc แยกจากสถานะสาย ถ้า server ล่มระหว่างสองคำสั่งตัวนับอาจคลาด จึงนับใหม่ตอนจบรอบ
 const countRunCalls = async (runId) => {
@@ -132,6 +135,7 @@ const executeRun = async (run) => {
         const todoSet = new Set(todo)
 
         // ใส่สายทั้งหมดของรอบก่อน แล้วค่อยเปลี่ยนเป็น RUNNING หน้าเว็บจะเห็นรายการสายครบตั้งแต่เริ่มตรวจ
+        const insertedAt = new Date()
         const rows = docs
             .filter((doc) => doc.bot_session_id)
             .map((doc) => ({
@@ -141,6 +145,7 @@ const executeRun = async (run) => {
                 call_created_at: doc.created_at,
                 duration: doc.duration,
                 status: todoSet.has(doc) ? 'QUEUED' : 'SKIPPED',
+                updated_at: insertedAt,
             }))
         if (rows.length) await QcJobRunCall.insertMany(rows, { ordered: false })
 

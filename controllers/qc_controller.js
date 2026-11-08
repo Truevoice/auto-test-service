@@ -38,6 +38,7 @@ const runCallsSchema = Joi.object({
   status: Joi.string().valid('QUEUED', 'RUNNING', 'DONE', 'FAILED', 'SKIPPED'),
   after: Joi.string().hex().length(24),
   limit: Joi.number().integer().min(1).max(500).default(100),
+  changed_since: Joi.date().iso(),
 })
 
 class qcController {
@@ -95,7 +96,8 @@ class qcController {
     const { error, value } = runCallsSchema.validate(req.query || {})
     if (error) return res.status(400).json({ message: error.details[0].message })
     try {
-      const data = await listRunCalls(req.params.id, value)
+      const { changed_since: changedSince, ...rest } = value
+      const data = await listRunCalls(req.params.id, { ...rest, changedSince })
       if (!data) return res.status(404).json({ message: 'Data Not Found' })
       res.json({ message: 'Success', data })
     } catch (e) {

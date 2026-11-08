@@ -33,17 +33,34 @@ const getRun = async (id) => {
     return withRunning(await QcJobRun.findById(id, NO_CALLS).lean())
 }
 
-// รายการสายของรอบ เรียงตามลำดับที่เลือกมา แบ่งชุดด้วย after = _id ของสายสุดท้ายที่หน้าเว็บมีแล้ว
-// คืน null ถ้าไม่มีรอบนี้
-const listRunCalls = async (id, { status, after, limit = 100 } = {}) => {
+// เผื่อการเขียนที่ประทับเวลาไว้ก่อนถามแต่บันทึกเสร็จหลังถาม (หลายช่องตรวจเขียนพร้อมกัน) ไม่ให้หลุด
+// ได้สายซ้ำบ้างไม่เป็นไร หน้าเว็บแทนที่ตาม _id
+const CHANGE_OVERLAP_MS = 5000
+const MAX_CHANGED = 500
+
+// รายการสายของรอบ คืน null ถ้าไม่มีรอบนี้ ทุกคำตอบมี as_of = เวลา server ตอนถาม ใช้เป็น changed_since ครั้งถัดไป
+// - ปกติ: เรียงตามลำดับที่เลือกมา แบ่งชุดด้วย after = _id ของสายสุดท้ายที่หน้าเว็บมีแล้ว (กรองตาม status ได้)
+// - changed_since: เฉพาะสายที่สถานะเปลี่ยนหลังเวลานั้น ทุกสถานะ (ระหว่างรอบกำลังรันมีแค่ไม่กี่สายต่อครั้ง)
+const listRunCalls = async (id, { status, after, limit = 100, changedSince } = {}) => {
     if (!mongoose.isValidObjectId(id) || (after && !mongoose.isValidObjectId(after))) return null
     if (!(await QcJobRun.exists({ _id: id }))) return null
-    const filter = { job_run_id: new mongoose.Types.ObjectId(String(id)) }
+    const asOf = new Date()
+    const jobRunId = new mongoose.Types.ObjectId(String(id))
+    if (changedSince) {
+        const since = new Date(new Date(changedSince).getTime() - CHANGE_OVERLAP_MS)
+        const items = await QcJobRunCall.find({ job_run_id: jobRunId, updated_at: { $gt: since } }, CALL_FIELDS)
+            .sort({ updated_at: 1 })
+            .limit(MAX_CHANGED)
+            .lean()
+        // เปลี่ยนเยอะเกินที่ส่งได้ในครั้งเดียว หน้าเว็บโหลดรายการใหม่ทั้งหมดแทน
+        return { items, as_of: asOf, truncated: items.length >= MAX_CHANGED }
+    }
+    const filter = { job_run_id: jobRunId }
     if (status) filter.status = status
     if (after) filter._id = { $gt: new mongoose.Types.ObjectId(String(after)) }
     const found = await QcJobRunCall.find(filter, CALL_FIELDS).sort({ _id: 1 }).limit(limit + 1).lean()
     const items = found.slice(0, limit)
-    return { items, next_after: found.length > limit ? items[items.length - 1]._id : null }
+    return { items, next_after: found.length > limit ? items[items.length - 1]._id : null, as_of: asOf }
 }
 
 const ACTIVE = ['SAMPLING', 'RUNNING']

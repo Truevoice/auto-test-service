@@ -15,6 +15,8 @@ const qcJobRunCallSchema = new mongoose.Schema(
         worker: Number,
         started_at: Date,
         finished_at: Date,
+        // เวลาที่สถานะเปลี่ยนล่าสุด หน้าเว็บใช้ถามเฉพาะสายที่เปลี่ยน (changed_since)
+        updated_at: Date,
     },
     { collection: 'qc_job_run_call', versionKey: false },
 )
@@ -26,5 +28,7 @@ qcJobRunCallSchema.index({ job_run_id: 1, bot_session_id: 1 }, { unique: true })
 qcJobRunCallSchema.index({ job_run_id: 1, _id: 1 })
 // กรองตามสถานะ เช่นหาสายที่กำลังตรวจเพื่อแสดงช่องตรวจ และนับใหม่ตอนจบรอบ
 qcJobRunCallSchema.index({ job_run_id: 1, status: 1, _id: 1 })
+// ระหว่างรอบกำลังรัน หน้าเว็บถามเฉพาะสายที่เปลี่ยนหลังเวลาที่ถามครั้งก่อน
+qcJobRunCallSchema.index({ job_run_id: 1, updated_at: 1 })
 
 module.exports = mongoose.model('QcJobRunCall', qcJobRunCallSchema)
