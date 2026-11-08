@@ -1,6 +1,7 @@
 const path = require('path')
 require('dotenv').config({path: path.join(__dirname, '../.env')})
 const express = require('express')
+const mongoose = require('mongoose')
 const intentRoutes = require('../router/intent_route')
 const agenticRoutes = require('../router/agentic_route')
 const qcRoutes = require('../router/qc_route')
@@ -30,7 +31,11 @@ const summarizeBody = (body) => {
 
 module.exports = (app) => {
   // ให้ Docker/load balancer เช็กว่าแอปพร้อม ไม่ต้องใช้ token และไม่ลง log (ถูกเรียกทุก 30 วิ)
-  app.get('/healthz', (req, res) => res.json({ ok: true }))
+  // 200 = รับงานได้, 503 = process ยังอยู่แต่ต่อ MongoDB ไม่ได้ (ไม่บอกรายละเอียดภายใน)
+  app.get('/healthz', (req, res) => {
+    const mongo = mongoose.connection.readyState === 1
+    res.status(mongo ? 200 : 503).json({ ok: mongo, mongo: mongo ? 'up' : 'down' })
+  })
 
   app.use((req, res, next) => {
     const uuid = uuidv4()
