@@ -1,0 +1,43 @@
+# ลอง build และรันทั้งระบบบนเครื่องตัวเอง (หน้าเว็บ + หลังบ้าน) ชี้ Mongo บนเครื่อง ไม่ใช้ตอน deploy
+#   docker compose -f docker-compose.local.yml up --build -d   แล้วเปิด http://localhost:8080
+#   docker compose -f docker-compose.local.yml logs -f api
+#   docker compose -f docker-compose.local.yml down
+# ต้องมี repo หน้าเว็บอยู่ข้างกัน (../auto-test-ui-service) และใน .env ต้องมี AUTH_TOKEN, MONGO_URI_DOCKER
+# ค่าใน .env ที่มี $ ต้องครอบด้วย '...' (compose แทนค่า $ ในไฟล์นี้)
+name: auto-qc-local
+
+services:
+    api:
+        build: .
+        env_file: [.env]
+        environment:
+            # ใน container "localhost" คือตัวมันเอง Mongo บนเครื่องเข้าผ่าน host.docker.internal
+            - 'MONGO_URI=${MONGO_URI_DOCKER}'
+            - 'SSH_ENABLED=false'
+            - 'PORT=3000'
+            - 'TZ=Asia/Bangkok'
+        volumes:
+            - './key:/opt/app/key:ro'
+        # ไม่ชน backend ที่รันด้วย node อยู่แล้วที่ :3000
+        ports:
+            - '127.0.0.1:3100:3000'
+        stop_grace_period: 35s
+        healthcheck:
+            test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3000/healthz']
+            interval: 10s
+            timeout: 5s
+            retries: 3
+            start_period: 30s
+
+    ui:
+        build: ../auto-test-ui-service
+        environment:
+            # เรียกหลังบ้านด้วยชื่อ service ใน network ของ compose
+            - 'API_UPSTREAM=http://api:3000'
+            # token เดียวกับหลังบ้าน (compose อ่านจาก .env ข้างไฟล์นี้)
+            - 'API_AUTH_TOKEN=${AUTH_TOKEN}'
+        ports:
+            - '127.0.0.1:8080:80'
+        depends_on:
+            api:
+                condition: service_healthy
