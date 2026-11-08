@@ -8,6 +8,8 @@ const runCallSchema = new mongoose.Schema(
         call_created_at: Date,
         duration: Number,
         status: { type: String, enum: ['QUEUED', 'RUNNING', 'DONE', 'FAILED', 'SKIPPED'] },
+        // เลขช่องตรวจ (1..concurrency) ที่หยิบสายนี้ไปตรวจ
+        worker: Number,
         started_at: Date,
         finished_at: Date,
     },

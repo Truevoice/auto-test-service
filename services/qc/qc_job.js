@@ -91,16 +91,17 @@ const evaluateSession = async (session, run) => {
     return update.status
 }
 
-// รัน worker พร้อมกันตามจำนวนช่องตรวจ (concurrency)
+// รัน worker พร้อมกันตามจำนวนช่องตรวจ (concurrency) แต่ละช่องมีเลข 1..N ส่งให้ worker ด้วย
+// หน้าเว็บใช้เลขช่องแสดงว่าช่องไหนกำลังตรวจสายไหน
 const runPool = async (items, worker, concurrency) => {
     let index = 0
-    const next = async () => {
+    const next = async (slot) => {
         while (index < items.length) {
             const item = items[index++]
-            await worker(item)
+            await worker(item, slot)
         }
     }
-    await Promise.all(Array.from({ length: Math.max(1, concurrency) }, next))
+    await Promise.all(Array.from({ length: Math.max(1, concurrency) }, (_, i) => next(i + 1)))
 }
 
 // อัปเดตสถานะของสายเดียวใน run.calls ด้วย arrayFilters (หลายช่องตรวจเขียนพร้อมกันได้ ไม่ทับกัน)
@@ -149,8 +150,8 @@ const executeRun = async (run) => {
 
         await runPool(
             todo,
-            async (session) => {
-                await setCall(run._id, session.bot_session_id, { status: 'RUNNING', started_at: new Date() })
+            async (session, worker) => {
+                await setCall(run._id, session.bot_session_id, { status: 'RUNNING', worker, started_at: new Date() })
                 const status = await evaluateSession(session, run)
                 await setCall(
                     run._id,
@@ -261,4 +262,4 @@ const start = async () => {
     onChange(applySchedule)
 }
 
-module.exports = { start, startQcJob, evaluateSession, evaluateWithRetry }
+module.exports = { start, startQcJob, evaluateSession, evaluateWithRetry, runPool }

@@ -4,6 +4,7 @@ const QcController = require('../controllers/qc_controller')
 const qcController = new QcController()
 
 router.post('/qc/run', qcController.run)
+router.get('/qc/runs', qcController.runs)
 router.get('/qc/runs/latest', qcController.latestRun)
 router.get('/qc/runs/:id', qcController.runDetail)
 router.post('/qc/sessions', qcController.list)

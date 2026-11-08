@@ -6,7 +6,7 @@ const { getFile, updateFile } = require('../services/qc/qc_files')
 const { getSettings, updateSettings, validateSettings } = require('../services/qc/qc_settings')
 const { getModels } = require('../services/qc/qc_models')
 const gemini = require('../api/gemini_api')
-const { toRunView, getLatestRun, getRun } = require('../services/qc/qc_run_service')
+const { toRunView, getLatestRun, getRun, listRuns } = require('../services/qc/qc_run_service')
 const QcSession = require('../models/qc_session_model')
 const log = require('../utils/log')
 
@@ -26,6 +26,11 @@ const runSchema = Joi.object({
   lookbackHours: Joi.number().min(1).max(720),
   samplePercent: Joi.number().greater(0).max(100),
   minDurationSeconds: Joi.number().integer().min(0).max(3600),
+})
+
+const runListSchema = Joi.object({
+  page: Joi.number().integer().min(1).default(1),
+  limit: Joi.number().integer().min(1).max(50).default(20),
 })
 
 class qcController {
@@ -48,6 +53,18 @@ class qcController {
   async latestRun(req, res) {
     try {
       res.json({ message: 'Success', data: await getLatestRun() })
+    } catch (e) {
+      log.error({ error: 'Controller: qcController ' + e?.message })
+      res.status(500).json({ message: 'Internal Server Error' })
+    }
+  }
+
+  // ประวัติรอบตรวจ ใหม่ก่อน (ไม่มีรายการสาย) สำหรับหน้า "รอบตรวจ"
+  async runs(req, res) {
+    const { error, value } = runListSchema.validate(req.query || {})
+    if (error) return res.status(400).json({ message: error.details[0].message })
+    try {
+      res.json({ message: 'Success', data: await listRuns(value) })
     } catch (e) {
       log.error({ error: 'Controller: qcController ' + e?.message })
       res.status(500).json({ message: 'Internal Server Error' })

@@ -18,4 +18,18 @@ const getRun = async (id) => {
     return toRunView(await QcJobRun.findById(id).lean())
 }
 
-module.exports = { toRunView, getLatestRun, getRun }
+// รายการรอบตรวจ ใหม่ก่อน ไม่มีรายการสาย (เอกสารเล็ก ถามบ่อยได้) เรียงด้วย index started_at
+// จำนวนทั้งหมดใช้ estimatedDocumentCount เพราะ DB เปิด notablescan (countDocuments({}) ต้องสแกนทั้ง collection)
+const listRuns = async ({ page = 1, limit = 20 } = {}) => {
+    const [items, total] = await Promise.all([
+        QcJobRun.find({}, { calls: 0 })
+            .sort({ started_at: -1 })
+            .skip((page - 1) * limit)
+            .limit(limit)
+            .lean(),
+        QcJobRun.estimatedDocumentCount(),
+    ])
+    return { items: items.map(toRunView), total, page, limit }
+}
+
+module.exports = { toRunView, getLatestRun, getRun, listRuns }
