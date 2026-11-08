@@ -1,7 +1,7 @@
 services:
-    tv-direct-api:
-        container_name: tv-direct-api
-        image: asia.gcr.io/kpat-in-the-box/tv-direct-api:${TAG}
+    auto-test-service:
+        container_name: auto-test-service
+        image: asia.gcr.io/kpat-in-the-box/auto-test-service:${TAG}
         # ค่าลับ (MONGO_URI, AUTH_TOKEN, GCP ...) อยู่ใน .env บนเครื่อง server ข้างไฟล์นี้ ไม่ bake ลง image
         env_file:
             - .env
@@ -28,7 +28,7 @@ services:
         logging:
             driver: 'gcplogs'
             options:
-                labels: tv-direct-api
+                labels: auto-test-service
 networks:
     kpat_network:
         external: true
