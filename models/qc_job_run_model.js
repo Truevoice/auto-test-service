@@ -1,22 +1,6 @@
 const mongoose = require('mongoose')
 
-// สายแต่ละสายในรอบตรวจ ใช้ดูว่ากำลังตรวจสายไหน เสร็จหรือไม่สำเร็จ
-const runCallSchema = new mongoose.Schema(
-    {
-        session_id: mongoose.Schema.Types.ObjectId,
-        bot_session_id: String,
-        call_created_at: Date,
-        duration: Number,
-        status: { type: String, enum: ['QUEUED', 'RUNNING', 'DONE', 'FAILED', 'SKIPPED'] },
-        // เลขช่องตรวจ (1..concurrency) ที่หยิบสายนี้ไปตรวจ
-        worker: Number,
-        started_at: Date,
-        finished_at: Date,
-    },
-    { _id: false },
-)
-
-// 1 document ต่อการรัน 1 รอบ (ตั้งเวลาหรือสั่งจากหน้าเว็บ)
+// 1 document ต่อการรัน 1 รอบ (ตั้งเวลาหรือสั่งจากหน้าเว็บ) สายแต่ละสายอยู่ใน qc_job_run_call
 const qcJobRunSchema = new mongoose.Schema(
     {
         trigger: { type: String, enum: ['SCHEDULE', 'RUN_TASK'] },
@@ -42,7 +26,6 @@ const qcJobRunSchema = new mongoose.Schema(
         finished_at: Date,
         // ข้อความ error จริง เก็บไว้ดูฝั่ง server ไม่ส่งให้หน้าเว็บ
         error: String,
-        calls: { type: [runCallSchema], default: [] },
     },
     { collection: 'qc_job_run', timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } },
 )

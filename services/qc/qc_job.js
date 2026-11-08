@@ -3,6 +3,7 @@ const log = require('../../utils/log')
 const gemini = require('../../api/gemini_api')
 const QcSession = require('../../models/qc_session_model')
 const QcJobRun = require('../../models/qc_job_run_model')
+const QcJobRunCall = require('../../models/qc_job_run_call_model')
 const { sampleEndedSessions } = require('./session_repo')
 const { getSettings, onChange } = require('./qc_settings')
 const { getPromptBundle } = require('./qc_files')
@@ -104,16 +105,19 @@ const runPool = async (items, worker, concurrency) => {
     await Promise.all(Array.from({ length: Math.max(1, concurrency) }, (_, i) => next(i + 1)))
 }
 
-// อัปเดตสถานะของสายเดียวใน run.calls ด้วย arrayFilters (หลายช่องตรวจเขียนพร้อมกันได้ ไม่ทับกัน)
-const setCall = (runId, botSessionId, fields, inc) =>
-    QcJobRun.updateOne(
-        { _id: runId },
-        {
-            $set: Object.fromEntries(Object.entries(fields).map(([k, v]) => [`calls.$[c].${k}`, v])),
-            ...(inc ? { $inc: inc } : {}),
-        },
-        { arrayFilters: [{ 'c.bot_session_id': botSessionId }] },
-    )
+// อัปเดตสถานะของสายเดียว (เอกสารเล็กของสายนั้น ไม่ต้องเขียนเอกสารรอบทั้งก้อน)
+const setCall = (runId, botSessionId, fields) =>
+    QcJobRunCall.updateOne({ job_run_id: runId, bot_session_id: botSessionId }, { $set: fields })
+
+// ตัวนับของรอบ $inc แยกจากสถานะสาย ถ้า server ล่มระหว่างสองคำสั่งตัวนับอาจคลาด จึงนับใหม่ตอนจบรอบ
+const countRunCalls = async (runId) => {
+    const rows = await QcJobRunCall.aggregate([
+        { $match: { job_run_id: runId } },
+        { $group: { _id: '$status', n: { $sum: 1 } } },
+    ])
+    const by = Object.fromEntries(rows.map((r) => [r._id, r.n]))
+    return { done: by.DONE || 0, failed: by.FAILED || 0 }
+}
 
 // เลือกสาย แล้วตรวจทีละช่อง บันทึกความคืบหน้าลง qc_job_run ตลอดทาง
 const executeRun = async (run) => {
@@ -127,6 +131,19 @@ const executeRun = async (run) => {
         const todo = docs.filter((doc) => doc.bot_session_id && !doneSet.has(doc.bot_session_id))
         const todoSet = new Set(todo)
 
+        // ใส่สายทั้งหมดของรอบก่อน แล้วค่อยเปลี่ยนเป็น RUNNING หน้าเว็บจะเห็นรายการสายครบตั้งแต่เริ่มตรวจ
+        const rows = docs
+            .filter((doc) => doc.bot_session_id)
+            .map((doc) => ({
+                job_run_id: run._id,
+                session_id: doc._id,
+                bot_session_id: doc.bot_session_id,
+                call_created_at: doc.created_at,
+                duration: doc.duration,
+                status: todoSet.has(doc) ? 'QUEUED' : 'SKIPPED',
+            }))
+        if (rows.length) await QcJobRunCall.insertMany(rows, { ordered: false })
+
         await QcJobRun.updateOne(
             { _id: run._id },
             {
@@ -137,13 +154,6 @@ const executeRun = async (run) => {
                     total,
                     sampled: docs.length,
                     skipped: docs.length - todo.length,
-                    calls: docs.map((doc) => ({
-                        session_id: doc._id,
-                        bot_session_id: doc.bot_session_id,
-                        call_created_at: doc.created_at,
-                        duration: doc.duration,
-                        status: todoSet.has(doc) ? 'QUEUED' : 'SKIPPED',
-                    })),
                 },
             },
         )
@@ -153,20 +163,16 @@ const executeRun = async (run) => {
             async (session, worker) => {
                 await setCall(run._id, session.bot_session_id, { status: 'RUNNING', worker, started_at: new Date() })
                 const status = await evaluateSession(session, run)
-                await setCall(
-                    run._id,
-                    session.bot_session_id,
-                    { status, finished_at: new Date() },
-                    { [status === 'DONE' ? 'done' : 'failed']: 1 },
-                )
+                await setCall(run._id, session.bot_session_id, { status, finished_at: new Date() })
+                await QcJobRun.updateOne({ _id: run._id }, { $inc: { [status === 'DONE' ? 'done' : 'failed']: 1 } })
             },
             run.concurrency,
         )
 
         const finished = await QcJobRun.findOneAndUpdate(
             { _id: run._id },
-            { $set: { status: 'DONE', finished_at: new Date() } },
-            { new: true, projection: { calls: 0 }, lean: true },
+            { $set: { status: 'DONE', finished_at: new Date(), ...(await countRunCalls(run._id)) } },
+            { new: true, lean: true },
         )
         log.info(
             {
@@ -197,7 +203,7 @@ const ACTIVE = ['SAMPLING', 'RUNNING']
 // options ที่ไม่ส่งมาใช้ค่าตั้งปัจจุบัน
 const startQcJob = async (options = {}, trigger = 'RUN_TASK') => {
     if (running) {
-        const current = await QcJobRun.findOne({ status: { $in: ACTIVE } }, { calls: 0 }).sort({ started_at: -1 }).lean()
+        const current = await QcJobRun.findOne({ status: { $in: ACTIVE } }).sort({ started_at: -1 }).lean()
         return { started: false, run: current }
     }
     running = true

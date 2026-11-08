@@ -6,7 +6,7 @@ const { getFile, updateFile } = require('../services/qc/qc_files')
 const { getSettings, updateSettings, validateSettings } = require('../services/qc/qc_settings')
 const { getModels } = require('../services/qc/qc_models')
 const gemini = require('../api/gemini_api')
-const { toRunView, getLatestRun, getRun, listRuns } = require('../services/qc/qc_run_service')
+const { toRunView, getLatestRun, getRun, listRuns, listRunCalls } = require('../services/qc/qc_run_service')
 const QcSession = require('../models/qc_session_model')
 const log = require('../utils/log')
 
@@ -32,6 +32,12 @@ const runListSchema = Joi.object({
   before: Joi.date().iso(),
   limit: Joi.number().integer().min(1).max(100).default(30),
   hideEmpty: Joi.boolean().default(false),
+})
+
+const runCallsSchema = Joi.object({
+  status: Joi.string().valid('QUEUED', 'RUNNING', 'DONE', 'FAILED', 'SKIPPED'),
+  after: Joi.string().hex().length(24),
+  limit: Joi.number().integer().min(1).max(500).default(100),
 })
 
 class qcController {
@@ -78,6 +84,20 @@ class qcController {
       const run = await getRun(req.params.id)
       if (!run) return res.status(404).json({ message: 'Data Not Found' })
       res.json({ message: 'Success', data: run })
+    } catch (e) {
+      log.error({ error: 'Controller: qcController ' + e?.message })
+      res.status(500).json({ message: 'Internal Server Error' })
+    }
+  }
+
+  // สายในรอบตรวจ แบ่งชุดด้วย after (กรองตามสถานะได้)
+  async runCalls(req, res) {
+    const { error, value } = runCallsSchema.validate(req.query || {})
+    if (error) return res.status(400).json({ message: error.details[0].message })
+    try {
+      const data = await listRunCalls(req.params.id, value)
+      if (!data) return res.status(404).json({ message: 'Data Not Found' })
+      res.json({ message: 'Success', data })
     } catch (e) {
       log.error({ error: 'Controller: qcController ' + e?.message })
       res.status(500).json({ message: 'Internal Server Error' })
