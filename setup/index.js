@@ -29,6 +29,9 @@ const summarizeBody = (body) => {
 }
 
 module.exports = (app) => {
+  // ให้ Docker/load balancer เช็กว่าแอปพร้อม ไม่ต้องใช้ token และไม่ลง log (ถูกเรียกทุก 30 วิ)
+  app.get('/healthz', (req, res) => res.json({ ok: true }))
+
   app.use((req, res, next) => {
     const uuid = uuidv4()
     const startTime = process.hrtime()

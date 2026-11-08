@@ -13,3 +13,8 @@ npm-debug.log*
 .DS_Store
 **/.DS_Store
 test
+
+# ข้อมูลลูกค้าที่ export ไว้ทดสอบ ห้ามติดไปกับ image
+exports/
+docs/
+scripts/

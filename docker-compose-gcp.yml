@@ -1,16 +1,28 @@
-version: '3'
 services:
     tv-direct-api:
         container_name: tv-direct-api
+        image: asia.gcr.io/kpat-in-the-box/tv-direct-api:${TAG}
+        # ค่าลับ (MONGO_URI, AUTH_TOKEN, GCP ...) อยู่ใน .env บนเครื่อง server ข้างไฟล์นี้ ไม่ bake ลง image
+        env_file:
+            - .env
         environment:
             - 'NODE_ENV=${NODE_ENV}'
             - 'TZ=Asia/Bangkok'
-        image: asia.gcr.io/kpat-in-the-box/tv-direct-api:${TAG}
+        # เปิดให้เครื่อง server เรียกได้อย่างเดียว (debug/curl) หน้าเว็บ (nginx) เรียกผ่าน kpat_network ด้วยชื่อ service
         ports:
-            - '3000:3000'
+            - '127.0.0.1:3000:3000'
         volumes:
-            - '/opt/app/'
+            # service account ของ Vertex AI / GCS อ่านอย่างเดียว
+            - './key:/opt/app/key:ro'
         restart: always
+        # ตอน deploy ให้เวลารอบตรวจหยุดหยิบสายใหม่และรอสายที่กำลังตรวจจบ (QC_SHUTDOWN_GRACE_MS 25 วิ + เผื่อ)
+        stop_grace_period: 35s
+        healthcheck:
+            test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3000/healthz']
+            interval: 30s
+            timeout: 5s
+            retries: 3
+            start_period: 30s
         networks:
             - kpat_network
         logging:
@@ -19,5 +31,5 @@ services:
                 labels: tv-direct-api
 networks:
     kpat_network:
-        external:
-            name: kpat_network
+        external: true
+        name: kpat_network
