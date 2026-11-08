@@ -1,5 +1,5 @@
 const { expect } = require('chai')
-const { validateFile } = require('../services/qc/qc_files')
+const { validateFile, getPromptVersion } = require('../services/qc/qc_files')
 const { missingFromEnv } = require('../services/qc/qc_settings')
 
 const rejected = (id, content) => {
@@ -38,5 +38,11 @@ describe('qc settings seeding', () => {
         expect(seed).to.not.have.any.keys('schedule', 'samplePercent')
         expect(seed.concurrency).to.equal(4)
         expect(seed).to.include.keys('jobEnabled', 'lookbackHours', 'model', 'temperature')
+    })
+
+    it('looks up only well-formed prompt versions (no DB call for anything else)', async () => {
+        for (const bad of ['', 'abc', '../../etc', '{"$ne":null}', 'ABCDEF1234', '0123456789a']) {
+            expect(await getPromptVersion(bad)).to.equal(null)
+        }
     })
 })

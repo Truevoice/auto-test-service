@@ -2,7 +2,7 @@ const Joi = require('joi')
 const qcJob = require('../services/qc/qc_job')
 const { listQcSessions, getQcSessionDetail } = require('../services/qc/qc_session_service')
 const { getQcConfig } = require('../services/qc/qc_config')
-const { getFile, updateFile } = require('../services/qc/qc_files')
+const { getFile, updateFile, getPromptVersion } = require('../services/qc/qc_files')
 const { getSettings, updateSettings, validateSettings } = require('../services/qc/qc_settings')
 const { getModels } = require('../services/qc/qc_models')
 const gemini = require('../api/gemini_api')
@@ -98,6 +98,18 @@ class qcController {
       const data = await listRunCalls(req.params.id, value)
       if (!data) return res.status(404).json({ message: 'Data Not Found' })
       res.json({ message: 'Success', data })
+    } catch (e) {
+      log.error({ error: 'Controller: qcController ' + e?.message })
+      res.status(500).json({ message: 'Internal Server Error' })
+    }
+  }
+
+  // prompt + schema ของเวอร์ชันที่รอบตรวจใช้ (ดูย้อนหลังได้แม้แก้ prompt ไปแล้ว)
+  async promptVersion(req, res) {
+    try {
+      const doc = await getPromptVersion(req.params.version)
+      if (!doc) return res.status(404).json({ message: 'Data Not Found' })
+      res.json({ message: 'Success', data: { version: doc._id, prompt: doc.prompt, schema: doc.schema, created_at: doc.created_at } })
     } catch (e) {
       log.error({ error: 'Controller: qcController ' + e?.message })
       res.status(500).json({ message: 'Internal Server Error' })

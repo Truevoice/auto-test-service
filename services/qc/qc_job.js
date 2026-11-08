@@ -6,7 +6,7 @@ const QcJobRun = require('../../models/qc_job_run_model')
 const QcJobRunCall = require('../../models/qc_job_run_call_model')
 const { sampleEndedSessions } = require('./session_repo')
 const { getSettings, onChange } = require('./qc_settings')
-const { getPromptBundle } = require('./qc_files')
+const { savePromptVersion } = require('./qc_files')
 const { buildTranscriptWithTurns, toGsUri } = require('./transcript')
 const { checkAudio } = require('./audio_check')
 const { findTurnMismatch } = require('./turn_check')
@@ -210,7 +210,7 @@ const startQcJob = async (options = {}, trigger = 'RUN_TASK') => {
     try {
         const settings = getSettings()
         // ใช้ prompt/schema ชุดเดียวทั้งรอบ แม้มีคนแก้จากหน้าเว็บระหว่างตรวจ
-        const { prompt, schema, version } = getPromptBundle()
+        const { prompt, schema, version } = await savePromptVersion()
         const run = await QcJobRun.create({
             trigger,
             status: 'SAMPLING',
@@ -220,8 +220,10 @@ const startQcJob = async (options = {}, trigger = 'RUN_TASK') => {
                 minDurationSeconds: options.minDurationSeconds ?? settings.minDurationSeconds,
             },
             model: settings.model,
+            temperature: settings.temperature,
             prompt_version: version,
             concurrency: settings.concurrency,
+            max_retry: settings.maxRetry,
             started_at: new Date(),
         })
         const job = { ...run.toObject(), temperature: settings.temperature, prompt, schema }

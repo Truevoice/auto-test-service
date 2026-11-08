@@ -12,9 +12,12 @@ const qcJobRunSchema = new mongoose.Schema(
             minDurationSeconds: Number,
         },
         model: String,
+        temperature: Number,
         // hash ของ prompt + schema ที่ใช้ตรวจรอบนี้
         prompt_version: String,
         concurrency: Number,
+        // จำนวนครั้งที่ลองใหม่สูงสุดต่อสาย ตอนเริ่มรอบนี้
+        max_retry: Number,
         calls_from: Date,
         calls_to: Date,
         total: { type: Number, default: 0 },

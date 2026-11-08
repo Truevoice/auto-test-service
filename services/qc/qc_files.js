@@ -2,6 +2,7 @@ const crypto = require('crypto')
 const fs = require('fs')
 const path = require('path')
 const QcSetting = require('../../models/qc_setting_model')
+const QcPromptVersion = require('../../models/qc_prompt_version_model')
 const log = require('../../utils/log')
 
 const ROOT = path.join(__dirname, '../..')
@@ -74,6 +75,8 @@ const loadFiles = async () => {
         }
         cache[id] = { content: doc.content, updated_at: doc.updated_at }
     }
+    // ชุดปัจจุบันมีสำเนาเสมอ (รอบเก่าที่ใช้ชุดเดียวกับตอนนี้ก็เปิดดูได้)
+    if (cache.promptFile && cache.schemaFile) await savePromptVersion().catch((e) => log.warn(e, 'QC: save prompt version'))
 }
 
 const getFile = (id) => (FILES[id] && cache[id] ? { id, ...cache[id] } : null)
@@ -92,7 +95,32 @@ const getPromptBundle = () => {
     const schemaText = cache.schemaFile?.content
     if (!prompt || !schemaText) throw new Error('QC prompt or schema is not configured')
     const version = crypto.createHash('sha1').update(prompt).update('\0').update(schemaText).digest('hex').slice(0, 10)
-    return { prompt, schema: JSON.parse(schemaText), version }
+    return { prompt, schema: JSON.parse(schemaText), schemaText, version }
 }
 
-module.exports = { FILE_IDS: Object.keys(FILES), loadFiles, getFile, updateFile, validateFile, getPromptBundle }
+// เก็บสำเนา prompt + schema ของเวอร์ชันนี้ (ครั้งแรกที่เจอเท่านั้น) ให้รอบตรวจเปิดดูย้อนหลังได้
+const savePromptVersion = async (bundle = getPromptBundle()) => {
+    await QcPromptVersion.updateOne(
+        { _id: bundle.version },
+        { $setOnInsert: { prompt: bundle.prompt, schema: bundle.schemaText } },
+        { upsert: true },
+    )
+    return bundle
+}
+
+// prompt + schema ของเวอร์ชันที่ระบุ (null ถ้าไม่มีสำเนา เช่นรอบที่รันก่อนมีการเก็บสำเนา)
+const getPromptVersion = async (version) => {
+    if (!/^[0-9a-f]{10}$/.test(String(version))) return null
+    return QcPromptVersion.findById(String(version)).lean()
+}
+
+module.exports = {
+    FILE_IDS: Object.keys(FILES),
+    loadFiles,
+    getFile,
+    updateFile,
+    validateFile,
+    getPromptBundle,
+    savePromptVersion,
+    getPromptVersion,
+}
