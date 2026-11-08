@@ -25,6 +25,11 @@ const qcJobRunSchema = new mongoose.Schema(
         skipped: { type: Number, default: 0 },
         done: { type: Number, default: 0 },
         failed: { type: Number, default: 0 },
+        // สายที่ไม่ได้ตรวจเพราะรอบถูกปิดกลางทาง
+        cancelled: { type: Number, default: 0 },
+        // จำนวนครั้งที่ทำต่อหลังระบบรีสตาร์ท และเวลาที่ทำต่อครั้งล่าสุด
+        resume_count: { type: Number, default: 0 },
+        resumed_at: Date,
         started_at: Date,
         finished_at: Date,
         // ข้อความ error จริง เก็บไว้ดูฝั่ง server ไม่ส่งให้หน้าเว็บ

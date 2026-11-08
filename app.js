@@ -8,8 +8,19 @@ const app = express()
 
 require('./setup/index')(app)
 
-const shutdown = async () => {
-    await mongo.disconnect()
+const { QC_SHUTDOWN_GRACE_MS = '25000' } = process.env
+let closing = false
+// ปิดระบบ (deploy/Ctrl+C): ให้รอบตรวจหยุดหยิบสายใหม่ และรอสายที่กำลังตรวจจบก่อน ส่งสัญญาณซ้ำ = ปิดทันที
+const shutdown = async (signal) => {
+    if (closing) process.exit(1)
+    closing = true
+    log.info({ signal }, 'Shutting down')
+    try {
+        await require('./services/qc/qc_job').shutdown(Number(QC_SHUTDOWN_GRACE_MS))
+        await mongo.disconnect()
+    } catch (e) {
+        log.error(e, 'Shutdown error')
+    }
     process.exit(0)
 }
 process.on('SIGINT', shutdown)

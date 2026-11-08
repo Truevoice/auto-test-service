@@ -10,7 +10,8 @@ const qcJobRunCallSchema = new mongoose.Schema(
         call_created_at: Date,
         duration: Number,
         // QUEUED = รอคิว, RUNNING = กำลังตรวจ, SKIPPED = เคยตรวจแล้วจากรอบก่อน
-        status: { type: String, enum: ['QUEUED', 'RUNNING', 'DONE', 'FAILED', 'SKIPPED'], required: true },
+        // CANCELLED = ไม่ได้ตรวจ เพราะรอบถูกปิดกลางทาง (ระบบรีสตาร์ทซ้ำเกินกำหนด หรือ session หายไปแล้ว)
+        status: { type: String, enum: ['QUEUED', 'RUNNING', 'DONE', 'FAILED', 'SKIPPED', 'CANCELLED'], required: true },
         // เลขช่องตรวจ (1..concurrency) ที่หยิบสายนี้ไปตรวจ
         worker: Number,
         started_at: Date,

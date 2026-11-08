@@ -35,7 +35,7 @@ const runListSchema = Joi.object({
 })
 
 const runCallsSchema = Joi.object({
-  status: Joi.string().valid('QUEUED', 'RUNNING', 'DONE', 'FAILED', 'SKIPPED'),
+  status: Joi.string().valid('QUEUED', 'RUNNING', 'DONE', 'FAILED', 'SKIPPED', 'CANCELLED'),
   after: Joi.string().hex().length(24),
   limit: Joi.number().integer().min(1).max(500).default(100),
   changed_since: Joi.date().iso(),
@@ -48,7 +48,8 @@ class qcController {
     const { error, value: options } = runSchema.validate(req.body || {})
     if (error) return res.status(400).json({ message: error.details[0].message })
     try {
-      const { started, run } = await qcJob.startQcJob(options, 'RUN_TASK')
+      const { started, stopping, run } = await qcJob.startQcJob(options, 'RUN_TASK')
+      if (stopping) return res.status(503).json({ message: 'Server is restarting, try again shortly' })
       if (!started) return res.status(409).json({ message: 'QC run already in progress', data: toRunView(run) })
       res.status(202).json({ message: 'Accepted', data: toRunView(run) })
     } catch (e) {

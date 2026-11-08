@@ -3,12 +3,20 @@ const QcJobRun = require('../../models/qc_job_run_model')
 const QcJobRunCall = require('../../models/qc_job_run_call_model')
 
 // error จริงอาจมี path หรือรายละเอียดภายใน หน้าเว็บได้แค่เหตุผลแบบกว้างๆ
+// RESTART_LIMIT = ทำต่อหลังรีสตาร์ทครบจำนวนครั้งแล้วยังไม่จบ, SERVER_RESTARTED = รีสตาร์ทแล้วทำต่อไม่ได้
+const failedReason = (status, error = '') => {
+    if (status !== 'FAILED') return null
+    if (error === 'server restarted too many times') return 'RESTART_LIMIT'
+    if (String(error).startsWith('server restarted')) return 'SERVER_RESTARTED'
+    return 'ERROR'
+}
+
 const toRunView = (run) => {
     if (!run) return null
     const { error, ...rest } = run
     return {
         ...rest,
-        failed_reason: run.status !== 'FAILED' ? null : error === 'server restarted' ? 'SERVER_RESTARTED' : 'ERROR',
+        failed_reason: failedReason(run.status, error),
     }
 }
 
