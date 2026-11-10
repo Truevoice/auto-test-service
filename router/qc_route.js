@@ -5,6 +5,8 @@ const qcController = new QcController()
 const AuthController = require('../controllers/auth_controller')
 const authController = new AuthController()
 const requireUser = require('../middlewares/require_user')
+const PipelineController = require('../controllers/pipeline_controller')
+const pipelineController = new PipelineController()
 
 // login/logout ไม่ต้องมี session (ยังไม่ได้ login)
 router.get('/qc/auth/login', authController.login)
@@ -31,5 +33,13 @@ router.get('/qc/users', qcController.users)
 router.get('/qc/prompt-versions/:version', qcController.promptVersion)
 router.get('/qc/config/files/:id', qcController.configFile)
 router.put('/qc/config/files/:id', qcController.updateConfigFile)
+
+// data-pipeline: ดึง sessions จากฐานต้นทางมาฐาน eval
+router.get('/qc/pipeline/config', pipelineController.config)
+router.put('/qc/pipeline/config', pipelineController.updateConfig)
+router.post('/qc/pipeline/count', pipelineController.count)
+router.post('/qc/pipeline/run', pipelineController.run)
+router.get('/qc/pipeline/runs', pipelineController.runs)
+router.get('/qc/pipeline/runs/:id', pipelineController.runDetail)
 
 module.exports = router

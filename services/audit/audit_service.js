@@ -4,7 +4,7 @@ const QcUser = require('../../models/qc_user_model')
 const { clientIp } = require('../auth/session_service')
 const log = require('../../utils/log')
 
-const ACTIONS = ['LOGIN', 'LOGIN_DENIED', 'LOGOUT', 'RUN_START', 'CONFIG_UPDATE', 'FILE_UPDATE', 'VIEW_CALL']
+const ACTIONS = ['LOGIN', 'LOGIN_DENIED', 'LOGOUT', 'RUN_START', 'CONFIG_UPDATE', 'FILE_UPDATE', 'VIEW_CALL', 'PIPELINE_START', 'PIPELINE_CONFIG_UPDATE']
 
 // บันทึกว่าใครทำอะไร ไม่ให้การบันทึกที่พลาดทำให้งานหลักพัง (log error ไว้แทน)
 // user ไม่ส่งมาใช้ req.user (ผู้ใช้ที่ login อยู่)
