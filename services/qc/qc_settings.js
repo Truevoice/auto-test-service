@@ -90,9 +90,11 @@ const validateSettings = (patch) => {
     return value
 }
 
-const updateSettings = async (patch) => {
+// updatedBy = { email, name } ของคนที่แก้จากหน้าเว็บ
+const updateSettings = async (patch, updatedBy = null) => {
     const value = validateSettings(patch)
     const $set = Object.fromEntries(Object.entries(value).map(([k, v]) => [`values.${k}`, v]))
+    $set.updated_by = updatedBy
     const doc = await QcSetting.findByIdAndUpdate(SETTINGS_ID, { $set }, { upsert: true, new: true, lean: true })
     overrides = pickKnown(doc.values)
     const settings = getSettings()

@@ -8,6 +8,8 @@ const qcSettingSchema = new mongoose.Schema(
         _id: { type: String },
         values: { type: mongoose.Schema.Types.Mixed, default: {} },
         content: String,
+        // คนที่แก้ล่าสุดจากหน้าเว็บ
+        updated_by: { email: String, name: String },
     },
     { collection: 'qc_setting', timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' }, minimize: false },
 )

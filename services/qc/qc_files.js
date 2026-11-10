@@ -73,7 +73,7 @@ const loadFiles = async () => {
             doc = await QcSetting.findByIdAndUpdate(docId(id), { $set: { content } }, { upsert: true, new: true, lean: true })
             log.info({ file: id }, 'QC: file seeded from disk')
         }
-        cache[id] = { content: doc.content, updated_at: doc.updated_at }
+        cache[id] = { content: doc.content, updated_at: doc.updated_at, updated_by: doc.updated_by || null }
     }
     // ชุดปัจจุบันมีสำเนาเสมอ (รอบเก่าที่ใช้ชุดเดียวกับตอนนี้ก็เปิดดูได้)
     if (cache.promptFile && cache.schemaFile) await savePromptVersion().catch((e) => log.warn(e, 'QC: save prompt version'))
@@ -81,10 +81,15 @@ const loadFiles = async () => {
 
 const getFile = (id) => (FILES[id] && cache[id] ? { id, ...cache[id] } : null)
 
-const updateFile = async (id, content) => {
+// updatedBy = { email, name } ของคนที่แก้จากหน้าเว็บ
+const updateFile = async (id, content, updatedBy = null) => {
     validateFile(id, content)
-    const doc = await QcSetting.findByIdAndUpdate(docId(id), { $set: { content } }, { upsert: true, new: true, lean: true })
-    cache[id] = { content: doc.content, updated_at: doc.updated_at }
+    const doc = await QcSetting.findByIdAndUpdate(
+        docId(id),
+        { $set: { content, updated_by: updatedBy } },
+        { upsert: true, new: true, lean: true },
+    )
+    cache[id] = { content: doc.content, updated_at: doc.updated_at, updated_by: doc.updated_by || null }
     log.info({ file: id, length: content.length }, 'QC: file updated')
     return getFile(id)
 }

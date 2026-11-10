@@ -241,7 +241,8 @@ const ACTIVE = ['SAMPLING', 'RUNNING']
 
 // เริ่มรอบตรวจแล้วคืนทันที (งานจริงทำต่อเบื้องหลัง) หน้าเว็บใช้ job_run id ไปถามความคืบหน้า
 // options ที่ไม่ส่งมาใช้ค่าตั้งปัจจุบัน
-const startQcJob = async (options = {}, trigger = 'RUN_TASK') => {
+// triggeredBy = { email, name } ของคนที่กดสั่ง (null สำหรับรอบที่ระบบตั้งเวลา)
+const startQcJob = async (options = {}, trigger = 'RUN_TASK', triggeredBy = null) => {
     if (stopping) return { started: false, stopping: true, run: null }
     if (running) {
         const current = await QcJobRun.findOne({ status: { $in: ACTIVE } }).sort({ started_at: -1 }).lean()
@@ -254,6 +255,7 @@ const startQcJob = async (options = {}, trigger = 'RUN_TASK') => {
         const { prompt, schema, version } = await savePromptVersion()
         const run = await QcJobRun.create({
             trigger,
+            triggered_by: triggeredBy,
             status: 'SAMPLING',
             options: {
                 lookbackHours: options.lookbackHours ?? settings.lookbackHours,

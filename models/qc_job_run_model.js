@@ -4,6 +4,8 @@ const mongoose = require('mongoose')
 const qcJobRunSchema = new mongoose.Schema(
     {
         trigger: { type: String, enum: ['SCHEDULE', 'RUN_TASK'] },
+        // คนที่กดสั่งตรวจ (ไม่มีสำหรับรอบที่ระบบตั้งเวลา)
+        triggered_by: { email: String, name: String },
         // SAMPLING = กำลังเลือกสาย, RUNNING = กำลังตรวจ
         status: { type: String, enum: ['SAMPLING', 'RUNNING', 'DONE', 'FAILED'] },
         options: {

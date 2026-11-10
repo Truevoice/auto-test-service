@@ -2,13 +2,14 @@ const Joi = require('joi')
 const qcJob = require('../services/qc/qc_job')
 const { listQcSessions, getQcSessionDetail } = require('../services/qc/qc_session_service')
 const { getQcConfig } = require('../services/qc/qc_config')
-const { getFile, updateFile, getPromptVersion } = require('../services/qc/qc_files')
+const { getFile, updateFile, getPromptVersion, getPromptBundle } = require('../services/qc/qc_files')
 const { getSettings, updateSettings, validateSettings } = require('../services/qc/qc_settings')
 const { getModels } = require('../services/qc/qc_models')
 const gemini = require('../api/gemini_api')
 const { toRunView, getLatestRun, getRun, listRuns, listRunCalls } = require('../services/qc/qc_run_service')
 const QcSession = require('../models/qc_session_model')
 const log = require('../utils/log')
+const audit = require('../services/audit/audit_service')
 
 const listSchema = Joi.object({
   start: Joi.date().iso().required(),
@@ -34,6 +35,25 @@ const runListSchema = Joi.object({
   hideEmpty: Joi.boolean().default(false),
 })
 
+const auditSchema = Joi.object({
+  email: Joi.string().email().max(200),
+  action: Joi.string().valid(...audit.ACTIONS),
+  before: Joi.string().hex().length(24),
+  limit: Joi.number().integer().min(1).max(100).default(50),
+})
+
+// ผู้ใช้ที่ login อยู่ เก็บไว้กับสิ่งที่เขาสร้าง/แก้
+const byUser = (req) => (req.user ? { email: req.user.email, name: req.user.name } : null)
+
+// เวอร์ชัน prompt/schema ปัจจุบัน (null ถ้ายังไม่ได้ตั้ง)
+const safeVersion = () => {
+  try {
+    return getPromptBundle().version
+  } catch {
+    return null
+  }
+}
+
 const runCallsSchema = Joi.object({
   status: Joi.string().valid('QUEUED', 'RUNNING', 'DONE', 'FAILED', 'SKIPPED', 'CANCELLED'),
   after: Joi.string().hex().length(24),
@@ -48,9 +68,10 @@ class qcController {
     const { error, value: options } = runSchema.validate(req.body || {})
     if (error) return res.status(400).json({ message: error.details[0].message })
     try {
-      const { started, stopping, run } = await qcJob.startQcJob(options, 'RUN_TASK')
+      const { started, stopping, run } = await qcJob.startQcJob(options, 'RUN_TASK', byUser(req))
       if (stopping) return res.status(503).json({ message: 'Server is restarting, try again shortly' })
       if (!started) return res.status(409).json({ message: 'QC run already in progress', data: toRunView(run) })
+      await audit.record(req, 'RUN_START', { target: run._id, detail: { options: run.options, model: run.model } })
       res.status(202).json({ message: 'Accepted', data: toRunView(run) })
     } catch (e) {
       log.error({ error: 'Controller: qcController ' + e?.message })
@@ -119,6 +140,32 @@ class qcController {
     }
   }
 
+  // ประวัติการใช้งาน: ใครทำอะไรเมื่อไร (กรองตามผู้ใช้/การกระทำได้)
+  async audit(req, res) {
+    const { error, value } = auditSchema.validate(req.query || {})
+    if (error) return res.status(400).json({ message: error.details[0].message })
+    try {
+      res.json({ message: 'Success', data: await audit.listAudit(value) })
+    } catch (e) {
+      log.error({ error: 'Controller: qcController ' + e?.message })
+      res.status(500).json({ message: 'Internal Server Error' })
+    }
+  }
+
+  // ผู้ใช้ที่เคย login (ตัวกรองในหน้าประวัติการใช้งาน)
+  async users(req, res) {
+    try {
+      const users = await audit.listUsers()
+      res.json({
+        message: 'Success',
+        data: users.map((u) => ({ email: u._id, name: u.name, picture: u.picture, last_login_at: u.last_login_at, login_count: u.login_count })),
+      })
+    } catch (e) {
+      log.error({ error: 'Controller: qcController ' + e?.message })
+      res.status(500).json({ message: 'Internal Server Error' })
+    }
+  }
+
   async list(req, res) {
     const { error, value } = listSchema.validate(req.body || {})
     if (error) return res.status(400).json({ message: error.details[0].message })
@@ -136,6 +183,7 @@ class qcController {
     try {
       const doc = await getQcSessionDetail(String(req.params.bot_session_id))
       if (!doc) return res.status(404).json({ message: 'Data Not Found' })
+      await audit.record(req, 'VIEW_CALL', { target: req.params.bot_session_id })
       res.json({ message: 'Success', data: doc })
     } catch (e) {
       log.error({ error: 'Controller: qcController ' + e?.message })
@@ -166,7 +214,14 @@ class qcController {
           return res.status(400).json({ message: `model "${patch.model}" cannot be used for QC right now` })
         }
       }
-      await updateSettings(patch)
+      const before = getSettings()
+      await updateSettings(patch, byUser(req))
+      const changes = Object.fromEntries(
+        Object.keys(patch)
+          .filter((k) => before[k] !== patch[k])
+          .map((k) => [k, { from: before[k], to: patch[k] }]),
+      )
+      if (Object.keys(changes).length) await audit.record(req, 'CONFIG_UPDATE', { target: 'settings', detail: { changes } })
       res.json({ message: 'Success', data: getQcConfig() })
     } catch (e) {
       if (e.status === 400) return res.status(400).json({ message: e.message })
@@ -200,7 +255,13 @@ class qcController {
   // แก้เนื้อหาไฟล์ prompt หรือ schema จากหน้าเว็บ { content } มีผลกับรอบตรวจถัดไป
   async updateConfigFile(req, res) {
     try {
-      const file = await updateFile(req.params.id, req.body?.content)
+      const fromVersion = safeVersion()
+      const file = await updateFile(req.params.id, req.body?.content, byUser(req))
+      // เก็บแค่เวอร์ชันก่อน/หลังกับความยาว ไม่เก็บเนื้อหา (ดูเนื้อหาย้อนหลังได้จากสำเนาตามเวอร์ชัน)
+      await audit.record(req, 'FILE_UPDATE', {
+        target: req.params.id,
+        detail: { from_version: fromVersion, to_version: safeVersion(), length: file.content.length },
+      })
       res.json({ message: 'Success', data: file })
     } catch (e) {
       if (e.status === 400) return res.status(400).json({ message: e.message })

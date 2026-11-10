@@ -35,7 +35,7 @@ const getQcConfig = () => {
                 if (FILE_IDS.includes(id)) {
                     // ไฟล์: บอกว่ามีเนื้อหาไหมและแก้ล่าสุดเมื่อไร เนื้อหาดูผ่าน GET /qc/config/files/:id
                     const file = getFile(id)
-                    return { id, value: file?.updated_at ?? null, exists: Boolean(file), editable: true }
+                    return { id, value: file?.updated_at ?? null, updated_by: file?.updated_by?.name || null, exists: Boolean(file), editable: true }
                 }
                 return { id, value: region() }
             }),
