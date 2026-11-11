@@ -1,3 +1,5 @@
+const crypto = require('crypto')
+const os = require('os')
 const cron = require('node-cron')
 const mongoose = require('mongoose')
 const log = require('../../utils/log')
@@ -13,11 +15,28 @@ const COLLECTION = 'sessions'
 const MAX_RESUME = 2
 const BATCH_RETRY = 2
 const ACTIVE = ['COUNTING', 'RUNNING']
+const LOCK = 'active'
+
+// process นี้ (หลาย server/container ใช้ DB เดียวกันได้ แยกกันด้วยชื่อนี้)
+const INSTANCE_ID = `${os.hostname()}:${process.pid}:${crypto.randomBytes(3).toString('hex')}`
+// ยืนยันว่ายังทำรอบอยู่ทุก HEARTBEAT_MS ถ้าเงียบเกิน STALE_MS ถือว่า process ที่ทำอยู่ล่ม ให้ตัวอื่นรับไปทำต่อ
+const HEARTBEAT_MS = Number(process.env.PIPELINE_HEARTBEAT_MS || 10_000)
+const STALE_MS = Number(process.env.PIPELINE_STALE_MS || 30_000)
+const RECOVER_MS = Math.max(1000, Math.floor(STALE_MS / 2))
 
 let running = false
 let stopping = false
 let currentRun = null
 let scheduledTask = null
+let recoverTimer = null
+
+// รอบนี้ถูก process อื่นรับไปแล้ว (เราเงียบนานเกินไป เช่นเครื่องค้าง) ต้องหยุดทันที ไม่เขียนทับกัน
+class LeaseLostError extends Error {
+    constructor(runId) {
+        super(`pipeline run ${runId} is now owned by another process`)
+        this.code = 'LEASE_LOST'
+    }
+}
 
 const batchCount = (total, limit) => (total > 0 && limit > 0 ? Math.ceil(total / limit) : 0)
 
@@ -54,7 +73,7 @@ const withRetry = async (fn, label) => {
     }
 }
 
-// ดึงทีละชุดจนหมดช่วง เขียนทับลงฐาน eval แล้วค่อยเลื่อน cursor (ล่มกลางชุด = ดึงชุดนั้นซ้ำ เขียนทับได้ไม่เสียหาย)
+// ดึงทีละชุด (limit) จนหมดช่วง เขียนทับลงฐาน eval แล้วค่อยเลื่อน cursor (ล่มกลางชุด = ดึงชุดนั้นซ้ำ เขียนทับได้ไม่เสียหาย)
 // source/target = collection ของ driver, onBatch({ cursor, count }) บันทึกความคืบหน้า
 // คืน 'DONE' หรือ 'STOPPED' (ระบบกำลังปิด)
 const copyBatches = async ({ source, target, range, limit, cursor = null, onBatch, shouldStop = () => false }) => {
@@ -104,7 +123,10 @@ const finishRun = async (runId, fields) => {
     const finishedAt = new Date()
     return PipelineRun.findOneAndUpdate(
         { _id: runId },
-        { $set: { ...fields, finished_at: finishedAt, duration_ms: run?.started_at ? finishedAt - run.started_at : null } },
+        {
+            $set: { ...fields, finished_at: finishedAt, duration_ms: run?.started_at ? finishedAt - run.started_at : null },
+            $unset: { lock: '' },
+        },
         { returnDocument: 'after', lean: true },
     )
 }
@@ -112,7 +134,13 @@ const finishRun = async (runId, fields) => {
 const failRun = async (runId, reason) => finishRun(runId, { status: 'FAILED', error: reason })
 
 // งานของรอบ: เปิดฐานต้นทาง (นับถ้ายังไม่ได้นับ) แล้วดึงทีละชุดจนจบ ปิดการเชื่อมต่อทุกครั้ง
-const execute = async (runId) => {
+// เขียนความคืบหน้าเฉพาะถ้ายังเป็นเจ้าของรอบ (ถ้าไม่ใช่แล้ว แปลว่ามี process อื่นรับไปทำต่อ)
+const updateOwned = async (runId, update) => {
+    const res = await PipelineRun.updateOne({ _id: runId, owner: INSTANCE_ID }, update)
+    if (!res.matchedCount) throw new LeaseLostError(runId)
+}
+
+const execute = async (runId, isLost) => {
     const run = await PipelineRun.findById(runId).lean()
     const range = { from: run.range_from, to: run.range_to }
     const source = await openSource(targetUri())
@@ -120,10 +148,7 @@ const execute = async (runId) => {
         const sessions = source.db.collection(COLLECTION)
         if (run.status === 'COUNTING') {
             const total = await sessions.countDocuments(rangeFilter(range))
-            await PipelineRun.updateOne(
-                { _id: runId },
-                { $set: { status: 'RUNNING', total, batches: batchCount(total, run.limit) } },
-            )
+            await updateOwned(runId, { $set: { status: 'RUNNING', total, batches: batchCount(total, run.limit) } })
             log.info({ pipeline_run_id: runId, total, limit: run.limit }, 'Pipeline: counted')
         }
         const target = mongoose.connection.db.collection(COLLECTION)
@@ -134,12 +159,15 @@ const execute = async (runId) => {
             range,
             limit: run.limit,
             cursor: run.cursor?.created_at ? run.cursor : null,
-            shouldStop: () => stopping,
+            shouldStop: () => stopping || isLost(),
             onBatch: ({ cursor, count }) =>
-                PipelineRun.updateOne({ _id: runId }, { $set: { cursor }, $inc: { batch_done: 1, copied: count } }),
+                updateOwned(runId, { $set: { cursor, heartbeat_at: new Date() }, $inc: { batch_done: 1, copied: count } }),
         })
+        if (isLost()) throw new LeaseLostError(runId)
         if (result === 'STOPPED') {
-            log.warn({ pipeline_run_id: runId }, 'Pipeline: stopped mid-run, will resume after restart')
+            // ปิดระบบแบบปกติ: ปล่อยรอบให้ process ถัดไปรับทำต่อได้ทันที ไม่ต้องรอให้ถือว่าเงียบนาน
+            await PipelineRun.updateOne({ _id: runId, owner: INSTANCE_ID }, { $set: { heartbeat_at: new Date(0) } })
+            log.warn({ pipeline_run_id: runId }, 'Pipeline: stopped mid-run, released for resume after restart')
             return
         }
         const done = await finishRun(runId, { status: 'DONE' })
@@ -153,28 +181,44 @@ const execute = async (runId) => {
 }
 
 const runInBackground = (runId) => {
+    let lost = false
+    // ยืนยันว่ายังทำอยู่ (ช่วงนับจำนวนหรือชุดที่ช้าก็ยังส่ง) ถ้าเจ้าของเปลี่ยนแล้วให้หยุด
+    const heartbeat = setInterval(() => {
+        PipelineRun.updateOne({ _id: runId, owner: INSTANCE_ID }, { $set: { heartbeat_at: new Date() } })
+            .then((res) => {
+                if (!res.matchedCount) lost = true
+            })
+            .catch((e) => log.warn({ pipeline_run_id: runId, error: e.message }, 'Pipeline: heartbeat failed'))
+    }, HEARTBEAT_MS)
+    heartbeat.unref()
     currentRun = (async () => {
         try {
-            await execute(runId)
+            await execute(runId, () => lost)
         } catch (e) {
-            log.error({ pipeline_run_id: runId, code: e.code, error: e.message }, 'Pipeline: run failed')
-            await failRun(runId, e.code || e.message).catch((err) => log.error(err, 'Pipeline: mark run failed'))
+            if (e.code === 'LEASE_LOST') {
+                log.warn({ pipeline_run_id: runId }, 'Pipeline: run taken over by another process, stopped here')
+            } else {
+                log.error({ pipeline_run_id: runId, code: e.code, error: e.message }, 'Pipeline: run failed')
+                await failRun(runId, e.code || e.message).catch((err) => log.error(err, 'Pipeline: mark run failed'))
+            }
         } finally {
+            clearInterval(heartbeat)
             running = false
             currentRun = null
         }
     })()
 }
 
+const currentActive = () => PipelineRun.findOne({ status: { $in: ACTIVE } }).sort({ started_at: -1 }).lean()
+
 // เริ่มรอบแล้วคืนทันที (งานจริงทำเบื้องหลัง) หน้าเว็บถามความคืบหน้าด้วย id
+// มีรอบกำลังทำอยู่ (จาก process ไหนก็ตาม) = ไม่เริ่ม คืนรอบนั้นแทน: กันด้วย unique index ของ lock จึงไม่มีจังหวะชนกัน
 const startPipeline = async ({ from, to, limit }, trigger = 'MANUAL', triggeredBy = null) => {
     if (stopping) return { started: false, stopping: true, run: null }
-    if (running || (await PipelineRun.exists({ status: { $in: ACTIVE } }))) {
-        const current = await PipelineRun.findOne({ status: { $in: ACTIVE } }).sort({ started_at: -1 }).lean()
-        return { started: false, run: current }
-    }
+    if (running) return { started: false, run: await currentActive() }
     running = true
     try {
+        const now = new Date()
         const run = await PipelineRun.create({
             trigger,
             triggered_by: triggeredBy,
@@ -182,12 +226,16 @@ const startPipeline = async ({ from, to, limit }, trigger = 'MANUAL', triggeredB
             range_from: from,
             range_to: to,
             limit: limit ?? getSettings().batchLimit,
-            started_at: new Date(),
+            lock: LOCK,
+            owner: INSTANCE_ID,
+            heartbeat_at: now,
+            started_at: now,
         })
         runInBackground(run._id)
         return { started: true, run: run.toObject() }
     } catch (e) {
         running = false
+        if (e.code === 11000) return { started: false, run: await currentActive() }
         throw e
     }
 }
@@ -202,25 +250,51 @@ const countRange = async ({ from, to }) => {
     }
 }
 
-// ทำรอบที่ค้างจากครั้งก่อนต่อจาก cursor (ล่มหรือ deploy กลางรอบ) เกิน MAX_RESUME ครั้งปิดเป็น FAILED
-const recoverRuns = async () => {
-    const stale = await PipelineRun.find({ status: { $in: ACTIVE } }).sort({ started_at: -1 }).lean()
-    if (!stale.length) return
-    const [latest, ...older] = stale
-    for (const r of older) await failRun(r._id, 'server restarted')
-    if ((latest.resume_count || 0) >= MAX_RESUME) {
-        log.warn({ pipeline_run_id: latest._id }, 'Pipeline: run resumed too many times, giving up')
-        await failRun(latest._id, 'server restarted too many times')
+// รับรอบที่ค้างมาทำต่อจาก cursor: เฉพาะรอบที่เจ้าของเงียบนานเกิน STALE_MS (process นั้นล่มหรือปิดไปแล้ว)
+// รอบที่ process อื่นยังทำอยู่จะไม่ถูกแตะ รับด้วย findOneAndUpdate ครั้งเดียว จึงมีแค่ process เดียวที่ได้รอบไป
+// เรียกตอนเริ่มระบบ และทุก RECOVER_MS (process ที่ทำอยู่ล่มเมื่อไรก็มีตัวอื่นรับต่อ)
+const claimStaleRun = async () => {
+    if (running || stopping) return
+    const now = new Date()
+    let run
+    try {
+        run = await PipelineRun.findOneAndUpdate(
+            {
+                status: { $in: ACTIVE },
+                $or: [{ heartbeat_at: { $lt: new Date(now.getTime() - STALE_MS) } }, { heartbeat_at: null }],
+            },
+            {
+                $set: { owner: INSTANCE_ID, heartbeat_at: now, resumed_at: now, lock: LOCK },
+                $inc: { resume_count: 1 },
+            },
+            { sort: { started_at: -1 }, returnDocument: 'after', lean: true },
+        )
+    } catch (e) {
+        // รอบเก่าที่ค้าง (ก่อนมี lock) แต่มีรอบอื่นถือ lock อยู่แล้ว: ปิดรอบเก่านั้น
+        if (e.code !== 11000) throw e
+        const legacy = await PipelineRun.findOne({ status: { $in: ACTIVE }, lock: { $exists: false } }).lean()
+        if (legacy) await failRun(legacy._id, 'server restarted')
+        return
+    }
+    if (!run) return
+    if (run.resume_count > MAX_RESUME) {
+        log.warn({ pipeline_run_id: run._id, resume_count: run.resume_count }, 'Pipeline: run resumed too many times, giving up')
+        await failRun(run._id, 'server restarted too many times')
         return
     }
     running = true
-    await PipelineRun.updateOne({ _id: latest._id }, { $inc: { resume_count: 1 }, $set: { resumed_at: new Date() } })
-    log.warn({ pipeline_run_id: latest._id, status: latest.status, batch_done: latest.batch_done }, 'Pipeline: resuming run')
-    runInBackground(latest._id)
+    log.warn({ pipeline_run_id: run._id, status: run.status, batch_done: run.batch_done }, 'Pipeline: resuming run')
+    runInBackground(run._id)
 }
+
+const recoverTick = () => claimStaleRun().catch((e) => log.error(e, 'Pipeline: recover check failed'))
 
 const shutdown = async (graceMs = 25000) => {
     stopping = true
+    if (recoverTimer) {
+        clearInterval(recoverTimer)
+        recoverTimer = null
+    }
     if (scheduledTask) {
         scheduledTask.destroy()
         scheduledTask = null
@@ -259,7 +333,9 @@ const applySchedule = (settings = getSettings()) => {
 }
 
 const start = async () => {
-    await recoverRuns()
+    await claimStaleRun()
+    recoverTimer = setInterval(recoverTick, RECOVER_MS)
+    recoverTimer.unref()
     applySchedule()
     onChange(applySchedule)
 }

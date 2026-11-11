@@ -19,6 +19,11 @@ const pipelineRunSchema = new mongoose.Schema(
         copied: { type: Number, default: 0 },
         // session สุดท้ายที่เขียนลงฐาน eval แล้ว ใช้ดึงชุดถัดไป และทำต่อหลังรีสตาร์ท
         cursor: { created_at: Date, _id: mongoose.Schema.Types.Mixed },
+        // ล็อกให้มีรอบที่กำลังทำได้รอบเดียวทั้งระบบ (unique index): มีค่า 'active' ระหว่างทำ ลบออกเมื่อจบ
+        lock: String,
+        // process ที่ทำรอบนี้อยู่ และเวลาที่ยืนยันว่ายังทำอยู่ล่าสุด (เงียบนานเกินกำหนด = process นั้นล่ม ให้ตัวอื่นรับไปทำต่อ)
+        owner: String,
+        heartbeat_at: Date,
         resume_count: { type: Number, default: 0 },
         resumed_at: Date,
         started_at: Date,
@@ -34,5 +39,7 @@ const pipelineRunSchema = new mongoose.Schema(
 pipelineRunSchema.index({ started_at: -1 })
 // หารอบที่ค้าง และค่าเฉลี่ยเวลาต่อชุดจากรอบที่เสร็จล่าสุด (ใช้ประมาณเวลา)
 pipelineRunSchema.index({ status: 1, started_at: -1 })
+// รอบที่กำลังทำได้แค่ 1 รอบ: กดพร้อมกัน, cron ชนกับคนกด หรือหลาย server ใช้ DB เดียวกัน รอบที่สองจะสร้างไม่ได้
+pipelineRunSchema.index({ lock: 1 }, { unique: true, partialFilterExpression: { lock: { $exists: true } } })
 
 module.exports = mongoose.model('PipelineRun', pipelineRunSchema)

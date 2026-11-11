@@ -13,10 +13,10 @@ const failedReason = (status, error = '') => {
     return 'ERROR'
 }
 
-// ไม่ส่ง error และ cursor (_id ของ session ต้นทาง) ออกไป
+// ไม่ส่ง error, cursor (_id ของ session ต้นทาง) และข้อมูลภายในของ process ที่ทำรอบ (ชื่อเครื่อง/pid) ออกไป
 const toRunView = (run) => {
     if (!run) return null
-    const { error, cursor, __v, ...rest } = run
+    const { error, cursor, lock, owner, heartbeat_at, __v, ...rest } = run
     return { ...rest, failed_reason: failedReason(run.status, error) }
 }
 

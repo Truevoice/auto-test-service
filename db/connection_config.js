@@ -1,4 +1,5 @@
 const fs = require('fs')
+const net = require('net')
 const { createTunnel } = require('tunnel-ssh')
 const log = require('../utils/log')
 
@@ -32,8 +33,27 @@ const readConfig = (prefix = '', defaults = {}) => {
     }
 }
 
+// มีโปรแกรมอื่นรับการเชื่อมต่อที่ 127.0.0.1:port อยู่แล้วไหม (เช่น Mongo local หรือ Docker ที่จอง *:27017)
+// macOS ยอมให้จอง 127.0.0.1:port ซ้อนกับ *:port ได้ ถ้าไม่เช็กก่อน การเชื่อมต่ออาจไปเจอฐานผิดตัวแบบเงียบๆ
+const portInUse = (port) =>
+    new Promise((resolve) => {
+        const socket = net.connect({ host: '127.0.0.1', port })
+        const done = (used) => {
+            socket.destroy()
+            resolve(used)
+        }
+        socket.setTimeout(500, () => done(false))
+        socket.once('connect', () => done(true))
+        socket.once('error', () => done(false))
+    })
+
 // เปิด SSH tunnel: 127.0.0.1:localPort -> ssh host -> dstHost:dstPort คืน close()
 const openTunnel = async (ssh, label = 'SSH tunnel') => {
+    if (await portInUse(Number(ssh.localPort))) {
+        const e = new Error(`${label}: local port ${ssh.localPort} is already in use, set another *SSH_LOCAL_PORT`)
+        e.code = 'PORT_IN_USE'
+        throw e
+    }
     const sshOptions = { host: ssh.host, port: Number(ssh.port), username: ssh.user }
     if (ssh.privateKeyPath) {
         sshOptions.privateKey = fs.readFileSync(ssh.privateKeyPath)
@@ -74,4 +94,4 @@ const buildOptions = (config) => {
     return options
 }
 
-module.exports = { readConfig, openTunnel, buildUri, buildOptions }
+module.exports = { readConfig, openTunnel, buildUri, buildOptions, portInUse }

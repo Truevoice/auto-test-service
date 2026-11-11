@@ -148,10 +148,41 @@ describe('data-pipeline', () => {
     })
 
     it('never sends the raw error or the source cursor to the UI', () => {
-        const view = toRunView({ _id: 'r', status: 'FAILED', error: 'connect ECONNREFUSED 10.0.0.5:27017', cursor: { _id: 'x' } })
-        expect(view).to.not.have.property('error')
-        expect(view).to.not.have.property('cursor')
+        const view = toRunView({
+            _id: 'r',
+            status: 'FAILED',
+            error: 'connect ECONNREFUSED 10.0.0.5:27017',
+            cursor: { _id: 'x' },
+            lock: 'active',
+            owner: 'host-a:1234:abcdef',
+            heartbeat_at: new Date(),
+        })
+        for (const key of ['error', 'cursor', 'lock', 'owner', 'heartbeat_at']) expect(view).to.not.have.property(key)
         expect(view.failed_reason).to.equal('ERROR')
         expect(failedReason('FAILED', 'NOT_CONFIGURED')).to.equal('NOT_CONFIGURED')
+    })
+})
+
+describe('ssh tunnel local port check', () => {
+    const net = require('net')
+    const { portInUse, openTunnel } = require('../db/connection_config')
+
+    it('sees a port that another program already listens on, and refuses to open the tunnel there', async () => {
+        const server = net.createServer().listen(0, '127.0.0.1')
+        await new Promise((r) => server.once('listening', r))
+        const { port } = server.address()
+        try {
+            expect(await portInUse(port)).to.equal(true)
+            let err
+            try {
+                await openTunnel({ localPort: port, host: 'unused', port: 22 }, 'Test tunnel')
+            } catch (e) {
+                err = e
+            }
+            expect(err?.code).to.equal('PORT_IN_USE')
+        } finally {
+            server.close()
+        }
+        expect(await portInUse(port)).to.equal(false)
     })
 })
