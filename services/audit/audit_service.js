@@ -32,7 +32,8 @@ const listAudit = async ({ email, action, before, limit = 50 } = {}) => {
     if (action) filter.action = action
     if (before && mongoose.isValidObjectId(before)) filter._id = { $lt: new mongoose.Types.ObjectId(String(before)) }
     // ใช้ index ที่ตรงกับตัวกรอง (DB เปิด notablescan)
-    let query = QcAuditLog.find(filter, { user_agent: 0 }).sort({ _id: -1 }).limit(limit + 1)
+    // ip กับ user_agent เก็บไว้ใน DB สำหรับตรวจสอบ ไม่ส่งออกไปหน้าเว็บ
+    let query = QcAuditLog.find(filter, { user_agent: 0, ip: 0 }).sort({ _id: -1 }).limit(limit + 1)
     if (email) query = query.hint({ email: 1, _id: -1 })
     else if (action) query = query.hint({ action: 1, _id: -1 })
     const found = await query.lean()
