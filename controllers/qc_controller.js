@@ -17,9 +17,9 @@ const listSchema = Joi.object({
   page: Joi.number().integer().min(1).default(1),
   limit: Joi.number().integer().min(1).max(100).default(20),
   status: Joi.string().valid('DONE', 'FAILED'),
-  problem: Joi.string()
-    .valid('NEEDS_REVIEW', 'NONE', 'STT_ERROR', 'BOT_LOGIC_FAIL', 'NLU_MISCLASSIFICATION', 'POOR_UX', 'TTS_STREAMING_FAIL', 'HIGH_LATENCY')
-    .allow(''),
+  // NEEDS_REVIEW หรือรหัสปัญหาที่ AI ตอบมา (primary_root_cause) ไม่จำกัดแค่รหัสในคำสั่ง เพราะ schema ไม่ได้ล็อก
+  // ชิปในหน้าเว็บสร้างจากรหัสที่มีจริงในข้อมูล ใช้แค่เทียบค่าตรงตัว
+  problem: Joi.string().trim().max(100).allow(''),
 })
 
 // ไม่ส่งค่าไหนมา ใช้ค่าตั้งปัจจุบันของงานตรวจ
